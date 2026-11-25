@@ -142,6 +142,12 @@ async def wait_until(predicate, timeout: float = 5.0) -> None:
     raise AssertionError("condition not met in time")
 
 
+def screen_text(app: CodexJaApp) -> str:
+    """Return what the terminal compositor actually paints."""
+    strips = app.screen._compositor.render_strips()
+    return "\n".join(strip.text.rstrip() for strip in strips)
+
+
 @pytest.fixture
 def session_file(tmp_path):
     config = make_config(tmp_path)
@@ -351,19 +357,63 @@ async def test_app_shows_original_first_then_translation(session_file):
         await wait_until(lambda: len(app._monitor.views) == 2)
         agent_view = app._monitor.views[1]
         widget = app._widgets[("thread-1", "a1")]
-        assert "I will inspect the storage layer." in widget.query_one("Markdown")._markdown
-        assert widget.query_one("Markdown")._open_links is False
+        body = widget.query_one("Markdown")
+        assert body._open_links is False
         assert agent_view.state in (TranslationState.QUEUED, TranslationState.TRANSLATING)
+
+        # The body must fit inside the message widget and be painted on screen.
+        assert widget.size.height >= body.size.height
+        assert widget.region.contains_region(body.region)
+        assert "I will inspect the storage layer." in screen_text(app)
 
         gate.set()
         await wait_until(lambda: agent_view.state is TranslationState.TRANSLATED)
         await pilot.pause()
-        assert "訳:I will inspect" in widget.query_one("Markdown")._markdown
+        assert "訳:I will inspect" in screen_text(app)
 
         await pilot.press("o")
         await pilot.pause()
-        assert "訳:" not in widget.query_one("Markdown")._markdown
-        assert "I will inspect the storage layer." in widget.query_one("Markdown")._markdown
+        rendered = screen_text(app)
+        assert "訳:" not in rendered
+        assert "I will inspect the storage layer." in rendered
+
+
+async def test_app_renders_bodies_with_many_messages(tmp_path):
+    config = make_config(tmp_path)
+    records = [meta("t")]
+    for index in range(50):
+        records.append(agent("t", f"a{index}", f"Rendered message body {index}."))
+    write_session(config.sessions_root, "t", records)
+    session = select_session(discover_sessions(config.sessions_root), "t")
+
+    app = CodexJaApp(
+        config, initial_session=session, transport=httpx.MockTransport(translating_handler)
+    )
+    async with app.run_test(size=(80, 24)) as pilot:
+        await wait_until(
+            lambda: (
+                len(app._monitor.views) == 50
+                and all(not view.pending for view in app._monitor.views)
+            )
+        )
+        await pilot.pause()
+        await pilot.pause()
+
+        last = app._widgets[("t", "a49")]
+        body = last.query_one("Markdown")
+        assert last.size.height > 1
+        assert last.region.contains_region(body.region)
+
+        rendered = screen_text(app)
+        assert "訳:Rendered message body 49." in rendered
+        assert "進捗報告" in rendered
+
+        await pilot.press("o")
+        await pilot.pause()
+        rendered = screen_text(app)
+        assert "Rendered message body 49." in rendered
+        assert "訳:Rendered message body 49." not in rendered
+        assert "原文" in rendered
 
 
 async def test_app_status_and_keys_render(session_file):
@@ -379,6 +429,44 @@ async def test_app_status_and_keys_render(session_file):
         assert "最終更新" in status
         footer = str(app.query_one("#footer", Static).content)
         assert "s:" in footer and "q:" in footer
+
+
+async def test_app_status_distinguishes_unknown_connected_and_failed(tmp_path):
+    config = make_config(tmp_path)
+    path = write_session(config.sessions_root, "t", [meta("t"), agent("t", "a1", "First.")])
+    session = select_session(discover_sessions(config.sessions_root), "t")
+    gate = asyncio.Event()
+    fail = {"value": False}
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "plamo-3-translate-2b"}]})
+        await gate.wait()
+        if fail["value"]:
+            return httpx.Response(503, json={})
+        return translating_handler(request)
+
+    app = CodexJaApp(config, initial_session=session, transport=httpx.MockTransport(handler))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(lambda: len(app._monitor.views) == 1)
+        await pilot.pause()
+        assert "PLaMo: 未確認" in str(app.query_one("#status", Static).content)
+
+        gate.set()
+        await wait_until(lambda: app._monitor.views[0].state is TranslationState.TRANSLATED)
+        await pilot.pause()
+        assert "PLaMo: 接続成功" in str(app.query_one("#status", Static).content)
+
+        fail["value"] = True
+        append(path, [agent("t", "a2", "Second.")])
+        await wait_until(
+            lambda: (
+                len(app._monitor.views) == 2
+                and app._monitor.views[1].state is TranslationState.FAILED
+            )
+        )
+        await pilot.pause()
+        assert "PLaMo: 通信失敗" in str(app.query_one("#status", Static).content)
 
 
 async def test_app_scroll_holds_position_until_end(tmp_path):

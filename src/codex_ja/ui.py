@@ -466,7 +466,7 @@ class Monitor:
     def _emit_status(self) -> None:
         self._listener.on_status(
             ViewerStatus(
-                server="停止" if self._scheduler_status.paused else "接続中",
+                server=self._scheduler_status.connection.label,
                 pending=self._scheduler_status.pending,
                 last_update=self._last_update,
                 note=self._note,
@@ -563,7 +563,7 @@ class CodexJaApp(App[None]):
     #status { height: 1; background: $panel; padding: 0 1; }
     #messages { height: 1fr; padding: 0 1; }
     #footer { height: 1; background: $panel; padding: 0 1; }
-    MessageWidget { margin-bottom: 1; }
+    MessageWidget { height: auto; margin-bottom: 1; }
     .msg-header { color: $accent; text-style: bold; }
     #session-dialog { width: 90%; height: 70%; background: $surface; padding: 1 2; }
     #session-title { height: 2; }
