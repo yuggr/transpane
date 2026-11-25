@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 from .models import AgentProvider, SessionInfo
 
@@ -15,6 +16,31 @@ CLAUDE_HISTORY_MODE = "claude-jsonl"
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+
+
+def _is_contained(path: Path, root_real: Path) -> bool:
+    """Return whether ``path`` resolves inside ``root_real``."""
+    try:
+        path.resolve().relative_to(root_real)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _iter_project_transcripts(project: Path, root_real: Path) -> Iterator[Path]:
+    """Yield eligible ``<uuid>.jsonl`` children of one validated project directory."""
+    try:
+        children = sorted(project.iterdir())
+    except OSError:
+        return
+    for path in children:
+        if path.suffix != ".jsonl" or not _UUID_RE.match(path.stem):
+            continue
+        if path.is_symlink() or not path.is_file():
+            continue
+        if not _is_contained(path, root_real):
+            continue
+        yield path
 
 
 def iter_claude_files(projects_root: Path) -> Iterator[Path]:
@@ -33,24 +59,18 @@ def iter_claude_files(projects_root: Path) -> Iterator[Path]:
     for project in projects:
         if project.is_symlink() or not project.is_dir():
             continue
-        try:
-            project.resolve().relative_to(root_real)
-        except (OSError, ValueError):
+        if not _is_contained(project, root_real):
             continue
-        try:
-            children = sorted(project.iterdir())
-        except OSError:
-            continue
-        for path in children:
-            if path.suffix != ".jsonl" or not _UUID_RE.match(path.stem):
-                continue
-            if path.is_symlink() or not path.is_file():
-                continue
-            try:
-                path.resolve().relative_to(root_real)
-            except (OSError, ValueError):
-                continue
-            yield path
+        yield from _iter_project_transcripts(project, root_real)
+
+
+def _read_head_chunk(handle: BinaryIO, limit: int, consumed: int) -> tuple[bytes | None, int, int]:
+    """Read one bounded chunk; ``None`` bytes means EOF."""
+    chunk_size = min(256 * 1024, limit - consumed)
+    chunk = handle.readline(chunk_size)
+    if not chunk:
+        return None, consumed, chunk_size
+    return chunk, consumed + len(chunk), chunk_size
 
 
 def _iter_head_lines(path: Path, limit: int) -> Iterator[bytes]:
@@ -60,11 +80,9 @@ def _iter_head_lines(path: Path, limit: int) -> Iterator[bytes]:
     try:
         with path.open("rb") as handle:
             while consumed < limit:
-                chunk_size = min(256 * 1024, limit - consumed)
-                chunk = handle.readline(chunk_size)
-                if not chunk:
+                chunk, consumed, chunk_size = _read_head_chunk(handle, limit, consumed)
+                if chunk is None:
                     return
-                consumed += len(chunk)
                 buffer += chunk
                 if buffer.endswith(b"\n"):
                     yield buffer
@@ -76,6 +94,28 @@ def _iter_head_lines(path: Path, limit: int) -> Iterator[bytes]:
         return
 
 
+def _is_eligible_record(record: dict, stem: str) -> bool:
+    """Return whether ``record`` carries the confirmed session metadata."""
+    if record.get("type") not in ("user", "assistant"):
+        return False
+    if record.get("sessionId") != stem:
+        return False
+    sidechain = record.get("isSidechain")
+    if isinstance(sidechain, bool) and sidechain:
+        return False
+    return "isSidechain" not in record or isinstance(sidechain, bool)
+
+
+def _meta_values(record: dict) -> tuple[str | None, str | None]:
+    """Normalize the ``cwd`` and ``version`` fields of an eligible record."""
+    cwd = record.get("cwd")
+    cli_version = record.get("version")
+    return (
+        cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None,
+        cli_version if isinstance(cli_version, str) else None,
+    )
+
+
 def read_claude_meta(path: Path) -> tuple[str | None, str | None] | None:
     """Confirm the session ID from the first eligible record and read its metadata."""
     for line in _iter_head_lines(path, META_READ_LIMIT):
@@ -85,22 +125,9 @@ def read_claude_meta(path: Path) -> tuple[str | None, str | None] | None:
             continue
         if not isinstance(record, dict):
             continue
-        if record.get("type") not in ("user", "assistant"):
+        if not _is_eligible_record(record, path.stem):
             continue
-        if record.get("sessionId") != path.stem:
-            continue
-        sidechain = record.get("isSidechain")
-        if isinstance(sidechain, bool) and sidechain:
-            continue
-        if "isSidechain" in record and not isinstance(sidechain, bool):
-            continue
-
-        cwd = record.get("cwd")
-        cli_version = record.get("version")
-        return (
-            cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None,
-            cli_version if isinstance(cli_version, str) else None,
-        )
+        return _meta_values(record)
     return None
 
 
