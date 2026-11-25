@@ -8,6 +8,19 @@ from datetime import datetime
 from enum import StrEnum
 
 
+class AgentProvider(StrEnum):
+    CODEX = "codex"
+    CLAUDE = "claude"
+
+    @property
+    def label(self) -> str:
+        labels = {
+            AgentProvider.CODEX: "Codex",
+            AgentProvider.CLAUDE: "Claude Code",
+        }
+        return labels[self]
+
+
 class MessageKind(StrEnum):
     USER = "user"
     COMMENTARY = "commentary"
@@ -75,6 +88,13 @@ class SessionInfo:
     cli_version: str | None
     parent_thread_id: str | None
     source: str | None
+    provider: AgentProvider = AgentProvider.CODEX
+
+    @property
+    def display_id(self) -> str:
+        if len(self.thread_id) <= 8:
+            return self.thread_id
+        return f"{self.thread_id[:8]}…"
 
     @property
     def is_subagent(self) -> bool:
@@ -86,6 +106,8 @@ class SessionInfo:
 
     @property
     def mode_label(self) -> str:
+        if self.history_mode == "claude-jsonl":
+            return "claude-jsonl"
         if self.history_mode in (None, "", "legacy"):
             return "legacy"
         if self.history_mode == "paginated":

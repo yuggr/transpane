@@ -169,3 +169,133 @@ class Extractor:
             kind=kind,
             original=text,
         )
+
+
+_CLAUDE_FLAGS = (
+    "isSidechain",
+    "isMeta",
+    "isCompactSummary",
+    "isVisibleInTranscriptOnly",
+    "isApiErrorMessage",
+)
+_CLAUDE_INTERNAL_TAGS = (
+    "<system-reminder>",
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+    "<command-message>",
+    "<command-name>",
+    "<command-args>",
+    "<task-notification>",
+    "<persisted-output>",
+    "<bash-stdout>",
+)
+_CLAUDE_HIDDEN_ASSISTANT_BLOCKS = frozenset({"thinking", "redacted_thinking", "tool_use"})
+_CLAUDE_IGNORED_USER_BLOCKS = frozenset({"image"})
+_CLAUDE_SYNTHETIC_MODEL = "<synthetic>"
+
+
+def _contains_internal_tag(texts: list[str]) -> bool:
+    combined = "".join(texts)
+    return any(tag in combined for tag in _CLAUDE_INTERNAL_TAGS)
+
+
+def _excluded_by_flag(record: dict[str, Any]) -> bool:
+    for name in _CLAUDE_FLAGS:
+        if name not in record:
+            continue
+        value = record[name]
+        if not isinstance(value, bool) or value:
+            return True
+    return False
+
+
+def _content_text(
+    content: Any,
+    ignored_blocks: frozenset[str],
+    *,
+    allow_string: bool,
+) -> str | None:
+    if isinstance(content, str):
+        if not allow_string:
+            return None
+        texts = [content]
+    elif isinstance(content, list):
+        texts = []
+        for block in content:
+            if not isinstance(block, dict):
+                return None
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text")
+                if not isinstance(text, str):
+                    return None
+                if text.strip():
+                    texts.append(text)
+            elif block_type in ignored_blocks:
+                continue
+            else:
+                return None
+    else:
+        return None
+    if _contains_internal_tag(texts):
+        return None
+    return "\n\n".join(texts)
+
+
+class ClaudeExtractor:
+    """Allowlisted conversion of Claude Code transcript records."""
+
+    def __init__(self, thread_id: str) -> None:
+        self.thread_id = thread_id
+
+    def extract(self, record: dict[str, Any], offset: int) -> ExtractResult:
+        record_type = record.get("type")
+        if record_type not in ("user", "assistant"):
+            return ExtractResult(reason="not_allowed")
+        # Internal/excluded records must not be mistaken for a session change.
+        if _excluded_by_flag(record):
+            return ExtractResult(reason="excluded")
+
+        session_id = record.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            return ExtractResult(reason="not_allowed")
+        if session_id != self.thread_id:
+            return ExtractResult(reason="thread_mismatch")
+
+        message_id = record.get("uuid")
+        if not isinstance(message_id, str) or not message_id:
+            return ExtractResult(reason="missing_id")
+
+        message = record.get("message")
+        if not isinstance(message, dict):
+            return ExtractResult(reason="bad_payload")
+        if message.get("role") != record_type:
+            return ExtractResult(reason="role_mismatch")
+        if message.get("model") == _CLAUDE_SYNTHETIC_MODEL:
+            return ExtractResult(reason="synthetic")
+
+        content = message.get("content")
+        if record_type == "user":
+            if record.get("toolUseResult") is not None:
+                return ExtractResult(reason="excluded")
+            text = _content_text(content, _CLAUDE_IGNORED_USER_BLOCKS, allow_string=True)
+        else:
+            text = _content_text(content, _CLAUDE_HIDDEN_ASSISTANT_BLOCKS, allow_string=False)
+
+        if text is None:
+            return ExtractResult(reason="excluded")
+        if not text.strip():
+            return ExtractResult(reason="empty")
+
+        return ExtractResult(
+            Message(
+                thread_id=self.thread_id,
+                message_id=message_id,
+                revision=make_revision(text),
+                sequence=offset,
+                timestamp=_timestamp(record),
+                kind=MessageKind.USER if record_type == "user" else MessageKind.ASSISTANT,
+                original=text,
+            )
+        )

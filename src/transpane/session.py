@@ -9,20 +9,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .claude import CLAUDE_HISTORY_MODE, discover_claude_sessions
 from .config import INITIAL_SCAN_CHUNK_BYTES, MAX_LINE_BYTES, MAX_POLL_BYTES
 from .events import (
+    ClaudeExtractor,
     Extractor,
     HistoryMode,
     UnsupportedHistoryMode,
     parse_history_mode,
 )
-from .models import Message, MessageKind, SessionInfo
+from .models import AgentProvider, Message, MessageKind, SessionInfo
 
 META_READ_LIMIT = 1024 * 1024
 
 
 class SessionError(Exception):
     """Session selection or access failed."""
+
+
+class SessionReadError(SessionError):
+    """The transcript could not be read safely."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class SessionIndexMismatch(SessionReadError):
+    """The on-disk record no longer matches the scan index."""
+
+    def __init__(self) -> None:
+        super().__init__("index_mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,9 +75,11 @@ class ScanResult:
 @dataclass
 class PollResult:
     messages: list[Message] = field(default_factory=list)
+    entries: list[IndexEntry] = field(default_factory=list)
     stats: ScanStats = field(default_factory=ScanStats)
     missing: bool = False
     rebuilt: bool = False
+    denied: bool = False
     thread_changed: str | None = None
     unsupported_mode: str | None = None
 
@@ -157,6 +176,7 @@ def discover_sessions(sessions_root: Path) -> list[SessionInfo]:
             cli_version=_optional_str(payload.get("cli_version")),
             parent_thread_id=parent,
             source=_optional_str(payload.get("source")),
+            provider=AgentProvider.CODEX,
         )
         raw.append((info, parent))
 
@@ -173,16 +193,63 @@ def discover_sessions(sessions_root: Path) -> list[SessionInfo]:
     return found
 
 
+def discover_all_sessions(
+    codex_root: Path,
+    claude_projects_root: Path,
+    provider: AgentProvider | None = None,
+) -> list[SessionInfo]:
+    found: list[SessionInfo] = []
+    if provider in (None, AgentProvider.CODEX):
+        found.extend(discover_sessions(codex_root))
+    if provider in (None, AgentProvider.CLAUDE):
+        found.extend(discover_claude_sessions(claude_projects_root))
+    found.sort(key=lambda item: (-item.updated_at, item.provider.value, item.thread_id, item.path))
+    return found
+
+
 def normalize_cwd(cwd: str) -> str:
     return os.path.normpath(os.path.abspath(os.path.expanduser(cwd)))
 
 
-def select_session(sessions: list[SessionInfo], thread_id: str) -> SessionInfo:
-    matches = [session for session in sessions if session.thread_id == thread_id]
+def parse_session_ref(ref: str) -> tuple[AgentProvider | None, str]:
+    prefix, separator, rest = ref.partition(":")
+    if separator and rest and prefix in (AgentProvider.CODEX.value, AgentProvider.CLAUDE.value):
+        return AgentProvider(prefix), rest
+    return None, ref
+
+
+def reader_for_session(
+    session: SessionInfo, codex_root: Path, claude_projects_root: Path
+) -> SessionReader:
+    root = claude_projects_root if session.provider is AgentProvider.CLAUDE else codex_root
+    return SessionReader(
+        Path(session.path),
+        session.thread_id,
+        provider=session.provider,
+        allowed_root=root,
+    )
+
+
+def select_session(
+    sessions: list[SessionInfo],
+    ref: str,
+    *,
+    source: AgentProvider | None = None,
+) -> SessionInfo:
+    wanted_provider, thread_id = parse_session_ref(ref)
+    if wanted_provider is not None and source is not None and wanted_provider is not source:
+        raise SessionError("--source とセッションIDの接頭辞が矛盾しています")
+    matches = [
+        session
+        for session in sessions
+        if session.thread_id == thread_id and (source is None or session.provider is source)
+    ]
+    if wanted_provider is not None:
+        matches = [session for session in matches if session.provider is wanted_provider]
     if not matches:
-        raise SessionError(f"セッションが見つかりません: {thread_id}")
+        raise SessionError(f"セッションが見つかりません: {ref}")
     if len(matches) > 1:
-        raise SessionError(f"セッションIDが重複しています: {thread_id}")
+        raise SessionError(f"セッションIDが重複しています: {ref}")
     return matches[0]
 
 
@@ -251,27 +318,54 @@ class SessionReader:
         path: Path,
         thread_id: str,
         max_poll_bytes: int = MAX_POLL_BYTES,
+        *,
+        provider: AgentProvider = AgentProvider.CODEX,
+        allowed_root: Path | None = None,
     ) -> None:
         self.path = path
         self.thread_id = thread_id
         self.max_poll_bytes = max_poll_bytes
+        self.provider = provider
+        self.allowed_root = allowed_root
         self._splitter = _LineSplitter()
-        self._mode: HistoryMode = HistoryMode.LEGACY
-        self._extractor = Extractor(thread_id, self._mode)
+        self._mode: HistoryMode | None = None
+        self._extractor: Extractor | ClaudeExtractor = ClaudeExtractor(thread_id)
+        self._reset_extractor()
         self._unsupported: str | None = None
         self._halted = False
         self._device: int | None = None
         self._inode: int | None = None
         self._scan_stats = ScanStats()
 
+    def _reset_extractor(self) -> None:
+        if self.provider is AgentProvider.CLAUDE:
+            self._mode = None
+            self._extractor = ClaudeExtractor(self.thread_id)
+        else:
+            self._mode = HistoryMode.LEGACY
+            self._extractor = Extractor(self.thread_id, self._mode)
+
+    def _source_allowed(self) -> bool:
+        if self.allowed_root is None:
+            return True
+        try:
+            if self.path.is_symlink() or not self.path.is_file():
+                return False
+            self.path.resolve().relative_to(self.allowed_root.resolve())
+        except (OSError, ValueError):
+            return False
+        return not (self.provider is AgentProvider.CLAUDE and self.path.stem != self.thread_id)
+
     def scan_all(self) -> ScanResult:
+        if not self._source_allowed():
+            raise SessionError("セッションのパスが許可範囲外です")
         self._splitter = _LineSplitter()
-        self._mode = HistoryMode.LEGACY
-        self._extractor = Extractor(self.thread_id, self._mode)
+        self._reset_extractor()
         self._unsupported = None
         self._halted = False
         self._scan_stats = ScanStats()
         entries: list[IndexEntry] = []
+        entry_positions: dict[str, int] = {}
         thread_changed: str | None = None
 
         with self.path.open("rb") as handle:
@@ -286,30 +380,52 @@ class SessionReader:
                     if changed is not None and thread_changed is None:
                         thread_changed = changed
                     if message is not None:
-                        entries.append(
-                            IndexEntry(
-                                message_id=message.message_id,
-                                sequence=message.sequence,
-                                end=message.sequence + len(raw),
-                                timestamp=message.timestamp,
-                                kind=message.kind,
-                                revision=message.revision,
-                            )
-                        )
+                        entry = self._make_entry(message, len(raw))
+                        if self.provider is AgentProvider.CLAUDE:
+                            position = entry_positions.get(entry.message_id)
+                            if position is None:
+                                entry_positions[entry.message_id] = len(entries)
+                                entries.append(entry)
+                            elif entries[position].revision != entry.revision:
+                                entries[position] = entry
+                        else:
+                            entries.append(entry)
 
         stat = self.path.stat()
         self._device = stat.st_dev
         self._inode = stat.st_ino
+        history_mode = (
+            CLAUDE_HISTORY_MODE
+            if self.provider is AgentProvider.CLAUDE
+            else (None if self._unsupported or self._mode is None else self._mode.value)
+        )
         return ScanResult(
             thread_id=self.thread_id,
-            history_mode=None if self._unsupported else self._mode.value,
+            history_mode=history_mode,
             unsupported_mode=self._unsupported,
             thread_changed=thread_changed,
             entries=entries,
             stats=self._scan_stats,
         )
 
+    @staticmethod
+    def _make_entry(message: Message, raw_length: int) -> IndexEntry:
+        return IndexEntry(
+            message_id=message.message_id,
+            sequence=message.sequence,
+            end=message.sequence + raw_length,
+            timestamp=message.timestamp,
+            kind=message.kind,
+            revision=message.revision,
+        )
+
     def poll(self) -> PollResult:
+        if self.path.is_symlink():
+            return PollResult(denied=True)
+        if not self.path.exists():
+            return PollResult(missing=True)
+        if not self._source_allowed():
+            return PollResult(denied=True)
         try:
             stat = self.path.stat()
         except OSError:
@@ -333,6 +449,7 @@ class SessionReader:
         lines, oversized = self._splitter.feed(chunk)
         stats.oversized_lines += oversized
         messages: list[Message] = []
+        entries: list[IndexEntry] = []
         thread_changed: str | None = None
         for offset, raw in lines:
             message, changed = self._process_line(offset, raw, stats)
@@ -340,32 +457,52 @@ class SessionReader:
                 thread_changed = changed
             if message is not None:
                 messages.append(message)
+                entries.append(self._make_entry(message, len(raw)))
 
         return PollResult(
             messages=messages,
+            entries=entries,
             stats=stats,
             thread_changed=thread_changed,
             unsupported_mode=self._unsupported,
         )
 
     def read_messages(self, entries: list[IndexEntry]) -> list[Message]:
-        if self._unsupported is not None:
+        if not entries:
             return []
+        if self._unsupported is not None:
+            raise SessionReadError("unsupported")
+        if self._halted:
+            raise SessionReadError("halted")
+        if self.path.is_symlink():
+            raise SessionReadError("denied")
+        if not self.path.exists():
+            raise SessionReadError("missing")
+        if not self._source_allowed():
+            raise SessionReadError("denied")
+
         messages: list[Message] = []
-        with self.path.open("rb") as handle:
-            for entry in entries:
-                handle.seek(entry.sequence)
-                raw = handle.read(entry.end - entry.sequence)
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                message = self._extract_record(record, entry.sequence)
-                if message is None or message.message_id != entry.message_id:
-                    continue
-                messages.append(message)
+        try:
+            with self.path.open("rb") as handle:
+                for entry in entries:
+                    handle.seek(entry.sequence)
+                    raw = handle.read(entry.end - entry.sequence)
+                    try:
+                        record = json.loads(raw)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        raise SessionIndexMismatch() from exc
+                    if not isinstance(record, dict):
+                        raise SessionIndexMismatch()
+                    message = self._extract_record(record, entry.sequence)
+                    if (
+                        message is None
+                        or message.message_id != entry.message_id
+                        or message.revision != entry.revision
+                    ):
+                        raise SessionIndexMismatch()
+                    messages.append(message)
+        except OSError as exc:
+            raise SessionReadError("read") from exc
         return messages
 
     @property
@@ -375,7 +512,7 @@ class SessionReader:
     def _extract_record(self, record: dict[str, Any], offset: int) -> Message | None:
         if self._unsupported is not None or self._halted:
             return None
-        if record.get("type") == "session_meta":
+        if self.provider is AgentProvider.CODEX and record.get("type") == "session_meta":
             return None
         return self._extractor.extract(record, offset).message
 
@@ -391,6 +528,22 @@ class SessionReader:
         if not isinstance(record, dict):
             stats.invalid_lines += 1
             return None, None
+
+        if self.provider is AgentProvider.CLAUDE:
+            stats.events += 1
+            if self._halted:
+                stats.ignored += 1
+                return None, None
+            result = self._extractor.extract(record, offset)
+            if result.reason == "thread_mismatch":
+                self._halted = True
+                session_id = record.get("sessionId")
+                return None, session_id if isinstance(session_id, str) else None
+            if result.message is None:
+                stats.ignored += 1
+                return None, None
+            stats.extracted += 1
+            return result.message, None
 
         if record.get("type") == "session_meta":
             payload = record.get("payload")

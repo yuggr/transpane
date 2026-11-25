@@ -2,150 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import httpx
 import pytest
 from textual.widgets import Static
 
-from transpane.config import load_config
+from support import (
+    FakeListener,
+    agent,
+    append,
+    make_config,
+    meta,
+    ok_response,
+    screen_text,
+    translating_handler,
+    user,
+    wait_until,
+    write_session,
+)
 from transpane.models import TranslationState
 from transpane.session import discover_sessions, select_session
 from transpane.ui import MessageView, Monitor, TranspaneApp
-
-BASE = "http://127.0.0.1:1234/v1"
-
-
-def meta(thread_id: str, mode: str = "paginated") -> dict:
-    return {
-        "timestamp": "2026-11-25T01:00:00Z",
-        "type": "session_meta",
-        "payload": {
-            "id": thread_id,
-            "cwd": "/tmp/demo",
-            "cli_version": "0.169.0",
-            "history_mode": mode,
-        },
-    }
-
-
-def user(thread_id: str, text: str) -> dict:
-    return {
-        "timestamp": "2026-11-25T01:00:01Z",
-        "type": "event_msg",
-        "payload": {
-            "type": "item_completed",
-            "item": {
-                "type": "UserMessage",
-                "id": f"u-{thread_id}",
-                "content": [{"type": "text", "text": text}],
-            },
-        },
-    }
-
-
-def agent(thread_id: str, item_id: str, text: str, phase: str = "commentary") -> dict:
-    return {
-        "timestamp": "2026-11-25T01:00:02Z",
-        "type": "event_msg",
-        "payload": {
-            "type": "item_completed",
-            "item": {
-                "type": "AgentMessage",
-                "id": item_id,
-                "phase": phase,
-                "content": [{"type": "Text", "text": text}],
-            },
-        },
-    }
-
-
-def write_session(root: Path, thread_id: str, records: list[dict]) -> Path:
-    path = root / "2026" / "11" / "25" / f"rollout-{thread_id}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False).encode("utf-8") + b"\n")
-    return path
-
-
-def append(path: Path, records: list[dict]) -> None:
-    with path.open("ab") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False).encode("utf-8") + b"\n")
-
-
-def make_config(tmp_path):
-    config_dir = tmp_path / "config" / "transpane"
-    config_dir.mkdir(parents=True)
-    (config_dir / "config.toml").write_text(
-        '[translation]\nbase_url = "http://127.0.0.1:1234/v1"\nmodel = "plamo-3-translate-2b"\n',
-        encoding="utf-8",
-    )
-    env = {
-        "CODEX_HOME": str(tmp_path / "codex"),
-        "XDG_CONFIG_HOME": str(tmp_path / "config"),
-        "XDG_CACHE_HOME": str(tmp_path / "cache"),
-    }
-    return load_config(env)
-
-
-def ok_response(text: str) -> httpx.Response:
-    return httpx.Response(
-        200,
-        json={
-            "choices": [
-                {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
-            ]
-        },
-    )
-
-
-def translating_handler(request: httpx.Request) -> httpx.Response:
-    if request.method == "GET":
-        return httpx.Response(200, json={"data": [{"id": "plamo-3-translate-2b"}]})
-    body = json.loads(request.content)
-    return ok_response("訳:" + body["messages"][1]["content"])
-
-
-class FakeListener:
-    def __init__(self) -> None:
-        self.resets: list[tuple] = []
-        self.added: list[MessageView] = []
-        self.prepended: list[MessageView] = []
-        self.updated: list[MessageView] = []
-        self.statuses: list = []
-
-    def on_reset(self, session, views):
-        self.resets.append((session, list(views)))
-
-    def on_added(self, view):
-        self.added.append(view)
-
-    def on_prepended(self, views):
-        self.prepended.extend(views)
-
-    def on_updated(self, view):
-        self.updated.append(view)
-
-    def on_status(self, status):
-        self.statuses.append(status)
-
-
-async def wait_until(predicate, timeout: float = 5.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition not met in time")
-
-
-def screen_text(app: TranspaneApp) -> str:
-    """Return what the terminal compositor actually paints."""
-    strips = app.screen._compositor.render_strips()
-    return "\n".join(strip.text.rstrip() for strip in strips)
 
 
 @pytest.fixture
@@ -230,9 +107,9 @@ async def test_monitor_deduplicates_revision_and_updates_in_place(tmp_path):
 async def test_monitor_initial_window_and_history(tmp_path):
     config = make_config(tmp_path)
     records = [meta("t")]
-    for index in range(60):
+    for index in range(100):
         records.append(agent("t", f"a{index}", f"Message number {index}."))
-    write_session(config.sessions_root, "t", records)
+    path = write_session(config.sessions_root, "t", records)
     session = select_session(discover_sessions(config.sessions_root), "t")
     calls = []
 
@@ -245,13 +122,37 @@ async def test_monitor_initial_window_and_history(tmp_path):
     await monitor.start(session)
     await wait_until(lambda: len(calls) == 50)
     assert len(monitor.views) == 50
-    assert monitor.views[-1].message.message_id == "a59"
-    assert monitor.views[0].message.message_id == "a10"
+    assert monitor.views[-1].message.message_id == "a99"
+    assert monitor.views[0].message.message_id == "a50"
+
+    append(
+        path,
+        [agent("t", f"b{index}", f"New message number {index}.") for index in range(55)],
+    )
+    await wait_until(lambda: len(monitor.views) == 105)
+    await wait_until(lambda: len(calls) == 105)
+
+    append(
+        path,
+        [agent("t", "b54", "Updated new message number 54.")],
+    )
+    await wait_until(
+        lambda: any(
+            view.message.message_id == "b54"
+            and view.message.original == "Updated new message number 54."
+            for view in monitor.views
+        )
+    )
+    await wait_until(lambda: len(calls) == 106)
 
     await monitor.add_history()
-    await wait_until(lambda: len(calls) == 60)
-    assert len(monitor.views) == 60
+    await wait_until(lambda: len(monitor.views) == 155)
+    await wait_until(lambda: len(calls) == 156)
     assert monitor.views[0].message.message_id == "a0"
+    assert monitor.views[49].message.message_id == "a49"
+    assert monitor.views[50].message.message_id == "a50"
+    assert monitor.views[-1].message.message_id == "b54"
+    assert len({view.message.message_id for view in monitor.views}) == 155
     await monitor.close()
 
 
@@ -710,6 +611,23 @@ async def test_app_startup_shows_picker_before_sending(tmp_path):
         await wait_until(lambda: len(app._monitor.views) == 1)
         assert app._monitor.session.thread_id == "t"
         assert len(calls) == 1
+
+
+async def test_picker_selection_uses_displayed_session_object(tmp_path):
+    config = make_config(tmp_path)
+    write_session(config.sessions_root, "a", [meta("a"), agent("a", "a1", "First session.")])
+    write_session(config.sessions_root, "b", [meta("b"), agent("b", "b1", "Second session.")])
+
+    app = TranspaneApp(config, transport=httpx.MockTransport(translating_handler))
+    async with app.run_test(size=(120, 40)) as pilot:
+        from transpane.ui import SessionScreen
+
+        await wait_until(lambda: isinstance(app.screen, SessionScreen))
+        displayed = app.screen._sessions[0]
+        app._sessions = []
+        await pilot.press("enter")
+        await wait_until(lambda: app._monitor.session is not None)
+        assert app._monitor.session.path == displayed.path
 
 
 async def test_app_s_key_switches_session(tmp_path):
