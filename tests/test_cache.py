@@ -6,7 +6,7 @@ import stat
 
 import pytest
 
-from codex_ja.cache import TranslationCache, cache_key
+from transpane.cache import TranslationCache, cache_key
 
 
 def test_cache_roundtrip_and_permissions(tmp_path):

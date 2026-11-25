@@ -125,7 +125,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     config_home = Path(environment.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
     cache_home = Path(environment.get("XDG_CACHE_HOME") or "~/.cache").expanduser()
 
-    config_path = config_home / "codex-ja" / "config.toml"
+    config_path = config_home / "transpane" / "config.toml"
     data: dict = {}
     existing_path: Path | None = None
     if config_path.exists():
@@ -163,6 +163,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         base_url=base_url,
         model=model,
         form=form,
-        cache_path=cache_home / "codex-ja" / "translations.sqlite3",
+        cache_path=cache_home / "transpane" / "translations.sqlite3",
         config_path=existing_path,
     )

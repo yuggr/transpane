@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from codex_ja.config import ConfigError, load_config, validate_base_url
+from transpane.config import ConfigError, load_config, validate_base_url
 
 
 def test_load_config_reads_all_values(tmp_path):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text(
         '[translation]\nbase_url = "http://192.168.1.9:1234/v1"\n'
@@ -23,11 +23,11 @@ def test_load_config_reads_all_values(tmp_path):
     assert config.model == "plamo-3-translate-2b"
     assert config.form == "plain"
     assert config.sessions_root == tmp_path / "codex" / "sessions"
-    assert config.cache_path == tmp_path / "cache" / "codex-ja" / "translations.sqlite3"
+    assert config.cache_path == tmp_path / "cache" / "transpane" / "translations.sqlite3"
 
 
 def test_missing_model_is_an_error(tmp_path):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text("[translation]\nform = 'polite'\n", encoding="utf-8")
     env = {"XDG_CONFIG_HOME": str(tmp_path / "config")}
@@ -36,7 +36,7 @@ def test_missing_model_is_an_error(tmp_path):
 
 
 def test_unknown_keys_are_errors(tmp_path):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     path = config_dir / "config.toml"
     path.write_text('[translation]\nmodel = "m"\nworker_count = 4\n', encoding="utf-8")
@@ -49,7 +49,7 @@ def test_unknown_keys_are_errors(tmp_path):
 
 
 def test_invalid_form_is_rejected(tmp_path):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text(
         '[translation]\nmodel = "m"\nform = "casual"\n', encoding="utf-8"
@@ -59,7 +59,7 @@ def test_invalid_form_is_rejected(tmp_path):
 
 
 def test_broken_toml_is_reported(tmp_path):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text("[translation\n", encoding="utf-8")
     with pytest.raises(ConfigError):

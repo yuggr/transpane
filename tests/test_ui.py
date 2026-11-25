@@ -8,10 +8,10 @@ import httpx
 import pytest
 from textual.widgets import Static
 
-from codex_ja.config import load_config
-from codex_ja.models import TranslationState
-from codex_ja.session import discover_sessions, select_session
-from codex_ja.ui import CodexJaApp, MessageView, Monitor
+from transpane.config import load_config
+from transpane.models import TranslationState
+from transpane.session import discover_sessions, select_session
+from transpane.ui import MessageView, Monitor, TranspaneApp
 
 BASE = "http://127.0.0.1:1234/v1"
 
@@ -76,7 +76,7 @@ def append(path: Path, records: list[dict]) -> None:
 
 
 def make_config(tmp_path):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text(
         '[translation]\nbase_url = "http://127.0.0.1:1234/v1"\nmodel = "plamo-3-translate-2b"\n',
@@ -142,7 +142,7 @@ async def wait_until(predicate, timeout: float = 5.0) -> None:
     raise AssertionError("condition not met in time")
 
 
-def screen_text(app: CodexJaApp) -> str:
+def screen_text(app: TranspaneApp) -> str:
     """Return what the terminal compositor actually paints."""
     strips = app.screen._compositor.render_strips()
     return "\n".join(strip.text.rstrip() for strip in strips)
@@ -351,7 +351,7 @@ async def test_app_shows_original_first_then_translation(session_file):
         body = json.loads(request.content)
         return ok_response("訳:" + body["messages"][1]["content"])
 
-    app = CodexJaApp(config, initial_session=session, transport=httpx.MockTransport(handler))
+    app = TranspaneApp(config, initial_session=session, transport=httpx.MockTransport(handler))
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
         await wait_until(lambda: len(app._monitor.views) == 2)
@@ -386,7 +386,7 @@ async def test_app_renders_bodies_with_many_messages(tmp_path):
     write_session(config.sessions_root, "t", records)
     session = select_session(discover_sessions(config.sessions_root), "t")
 
-    app = CodexJaApp(
+    app = TranspaneApp(
         config, initial_session=session, transport=httpx.MockTransport(translating_handler)
     )
     async with app.run_test(size=(80, 24)) as pilot:
@@ -418,7 +418,7 @@ async def test_app_renders_bodies_with_many_messages(tmp_path):
 
 async def test_app_status_and_keys_render(session_file):
     config, _path, session = session_file
-    app = CodexJaApp(
+    app = TranspaneApp(
         config, initial_session=session, transport=httpx.MockTransport(translating_handler)
     )
     async with app.run_test(size=(120, 40)) as pilot:
@@ -446,7 +446,7 @@ async def test_app_status_distinguishes_unknown_connected_and_failed(tmp_path):
             return httpx.Response(503, json={})
         return translating_handler(request)
 
-    app = CodexJaApp(config, initial_session=session, transport=httpx.MockTransport(handler))
+    app = TranspaneApp(config, initial_session=session, transport=httpx.MockTransport(handler))
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(lambda: len(app._monitor.views) == 1)
         await pilot.pause()
@@ -476,7 +476,7 @@ async def test_app_scroll_holds_position_until_end(tmp_path):
         records.append(agent("t", f"a{index}", f"Message {index}."))
     path = write_session(config.sessions_root, "t", records)
     session = select_session(discover_sessions(config.sessions_root), "t")
-    app = CodexJaApp(
+    app = TranspaneApp(
         config, initial_session=session, transport=httpx.MockTransport(translating_handler)
     )
     async with app.run_test(size=(80, 24)) as pilot:
@@ -499,8 +499,8 @@ async def test_app_scroll_holds_position_until_end(tmp_path):
 
 
 def test_initial_state_of_plain_and_secret_documents():
-    from codex_ja.markdown import protect_document
-    from codex_ja.ui import initial_state
+    from transpane.markdown import protect_document
+    from transpane.ui import initial_state
 
     assert initial_state(protect_document("Hello world.")) is TranslationState.ORIGINAL
     assert initial_state(protect_document("これは日本語です。")) is TranslationState.SKIPPED
@@ -513,8 +513,8 @@ def test_initial_state_of_plain_and_secret_documents():
 
 
 async def test_message_widget_sanitizes_control_codes():
-    from codex_ja.markdown import protect_document
-    from codex_ja.models import Message, MessageKind
+    from transpane.markdown import protect_document
+    from transpane.models import Message, MessageKind
 
     message = Message(
         thread_id="t",
@@ -531,7 +531,7 @@ async def test_message_widget_sanitizes_control_codes():
         state=TranslationState.SKIPPED,
     )
     # The sanitizer is pure; the widget is exercised through the app tests.
-    from codex_ja.ui import sanitize_for_display
+    from transpane.ui import sanitize_for_display
 
     cleaned = sanitize_for_display(view.display_text())
     assert "\x1b" not in cleaned
@@ -699,9 +699,9 @@ async def test_app_startup_shows_picker_before_sending(tmp_path):
         calls.append(1)
         return translating_handler(request)
 
-    app = CodexJaApp(config, transport=httpx.MockTransport(handler))
+    app = TranspaneApp(config, transport=httpx.MockTransport(handler))
     async with app.run_test(size=(120, 40)) as pilot:
-        from codex_ja.ui import SessionScreen
+        from transpane.ui import SessionScreen
 
         await wait_until(lambda: isinstance(app.screen, SessionScreen))
         assert calls == []
@@ -719,11 +719,11 @@ async def test_app_s_key_switches_session(tmp_path):
     initial = select_session(sessions, "a")
     write_session(config.sessions_root, "b", [meta("b"), agent("b", "b1", "Second session.")])
 
-    app = CodexJaApp(
+    app = TranspaneApp(
         config, initial_session=initial, transport=httpx.MockTransport(translating_handler)
     )
     async with app.run_test(size=(120, 40)) as pilot:
-        from codex_ja.ui import SessionScreen
+        from transpane.ui import SessionScreen
 
         await wait_until(lambda: len(app._monitor.views) == 1)
         await pilot.press("s")

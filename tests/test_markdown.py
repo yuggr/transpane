@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codex_ja.markdown import (
+from transpane.markdown import (
     protect_document,
     restore_markers,
     split_protected,
@@ -96,7 +96,7 @@ def test_skip_secrets():
 def test_protects_urls_links_paths_options_and_identifiers():
     text = (
         "See https://example.com/a and [the docs](https://example.com/b), "
-        "edit src/codex_ja/main_file.py, run --verbose with SOME_TOKEN_VAR, "
+        "edit src/transpane/main_file.py, run --verbose with SOME_TOKEN_VAR, "
         "then call do_work() and check v1.2.3.\n"
     )
     doc = protect_document(text)
@@ -106,7 +106,7 @@ def test_protects_urls_links_paths_options_and_identifiers():
     for value in (
         "https://example.com/a",
         "[the docs](https://example.com/b)",
-        "src/codex_ja/main_file.py",
+        "src/transpane/main_file.py",
         "--verbose",
         "SOME_TOKEN_VAR",
         "do_work()",

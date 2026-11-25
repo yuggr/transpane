@@ -7,9 +7,9 @@ import json
 import httpx
 import pytest
 
-from codex_ja.cache import TranslationCache, cache_key
-from codex_ja.markdown import Segment
-from codex_ja.translation import (
+from transpane.cache import TranslationCache, cache_key
+from transpane.markdown import Segment
+from transpane.translation import (
     ConnectionState,
     ErrorKind,
     SchedulerStatus,

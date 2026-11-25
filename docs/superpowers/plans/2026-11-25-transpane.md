@@ -1,14 +1,14 @@
-# codex-ja Implementation Plan
+# transpane Implementation Plan
 
-**Goal:** Implement the design in `codex-ja-design-v1.0.md` as an independent, tested
+**Goal:** Implement the design in `transpane-design-v1.0.md` as an independent, tested
 Textual TUI + diagnostic CLI that reads Codex rollout JSONL read-only, protects Markdown,
 and translates through a loopback-only OpenAI-compatible PLaMo server.
 
-**Spec:** `codex-ja-design-v1.0.md` (binding authority).
+**Spec:** `transpane-design-v1.0.md` (binding authority).
 
 ## Global constraints (verbatim values from the spec)
 
-- Python >= 3.12, uv + committed `uv.lock`, console script `codex-ja`.
+- Python >= 3.12, uv + committed `uv.lock`, console script `transpane`.
 - Poll 250 ms, session list refresh 2 s, connect timeout 3 s, read timeout 60 s,
   total 90 s, 1000 code points per segment, 1 HTTP worker, initial 50 messages,
   history page 50, pending queue 32, max line 8 MiB, poll read 1 MiB.
