@@ -127,7 +127,7 @@ Expected: すべて PASS（合計 211 passed 以上）。
 - [ ] **Step 7: Lint and measure**
 
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/session.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/session.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/session.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: lint clean。`session.py` の最大 cognitive が 57 から低下し、合計も減少。
 
 - [ ] **Step 8: Commit**
@@ -183,7 +183,7 @@ Expected: all pass（特に `test_ambiguous_blocks_stay_original` が通るこ�
 
 Run: `uv run pytest tests/test_markdown.py -q && uv run pytest -q`
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/markdown.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/markdown.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/markdown.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: tests pass、lint clean、`markdown.py` の最大 cognitive が 45 から低下。
 
 - [ ] **Step 6: Commit**
@@ -236,7 +236,7 @@ type / sessionId / sidechain の適格判定を `_is_eligible_record`、cwd / ve
 
 Run: `uv run pytest tests/test_session.py -q && uv run pytest -q`
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/claude.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/claude.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/claude.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: tests pass、lint clean、`claude.py` の最大 cognitive が 35 から低下。
 
 - [ ] **Step 6: Commit**
@@ -293,7 +293,7 @@ list 側のブロック解釈を `_texts_from_blocks` に移す。dict 以外・
 
 Run: `uv run pytest tests/test_events.py tests/test_claude_events.py -q && uv run pytest -q`
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/events.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/events.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/events.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: tests pass、lint clean、`events.py` の最大 cognitive が 25 から低下。
 
 - [ ] **Step 6: Commit**
@@ -347,7 +347,7 @@ HTTP POST と例外変換を `_post_completion`、レスポンス検証を `_par
 
 Run: `uv run pytest tests/test_translation.py -q && uv run pytest -q`
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/translation.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/translation.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/translation.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: tests pass、lint clean、`translation.py` の最大 cognitive が 21 から低下。
 
 - [ ] **Step 5: Commit**
@@ -389,7 +389,7 @@ Expected: all pass。
 
 Run: `uv run pytest tests/test_config.py -q && uv run pytest -q`
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/config.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/config.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/config.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: tests pass、lint clean、`validate_base_url` の cognitive が 17 から低下。
 
 - [ ] **Step 4: Commit**
@@ -449,7 +449,7 @@ Expected: 1 passed（characterization）。
 
 Run: `uv run pytest tests/test_cli.py -q && uv run pytest -q`
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/cli.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/cli.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/cli.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: tests pass、lint clean、`run_doctor` の cognitive が 24 から低下。
 
 - [ ] **Step 5: Commit**
@@ -554,7 +554,7 @@ Expected: すべて PASS。
 - [ ] **Step 6: Lint and measure**
 
 Run: `uv run ruff check src tests && uv run ruff format --check src/transpane/ui.py`
-Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file=="src/transpane/ui.py") | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
+Run: `omen complexity -p src -f json | jq -r '.files[] | select(.file|endswith("transpane/ui.py")) | [.total_cognitive, ([.functions[].metrics.cognitive]|max)] | @tsv'`
 Expected: lint clean、`ui.py` の最大 cognitive が 25 から低下。
 
 - [ ] **Step 7: Commit**
