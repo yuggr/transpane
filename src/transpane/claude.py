@@ -27,6 +27,15 @@ def _is_contained(path: Path, root_real: Path) -> bool:
     return True
 
 
+def _is_transcript_child(path: Path, root_real: Path) -> bool:
+    """Return whether ``path`` is a contained regular ``<uuid>.jsonl`` file."""
+    if path.suffix != ".jsonl" or not _UUID_RE.match(path.stem):
+        return False
+    if path.is_symlink() or not path.is_file():
+        return False
+    return _is_contained(path, root_real)
+
+
 def _iter_project_transcripts(project: Path, root_real: Path) -> Iterator[Path]:
     """Yield eligible ``<uuid>.jsonl`` children of one validated project directory."""
     try:
@@ -34,13 +43,21 @@ def _iter_project_transcripts(project: Path, root_real: Path) -> Iterator[Path]:
     except OSError:
         return
     for path in children:
-        if path.suffix != ".jsonl" or not _UUID_RE.match(path.stem):
+        if _is_transcript_child(path, root_real):
+            yield path
+
+
+def _iter_projects(projects_root: Path, root_real: Path) -> Iterator[Path]:
+    """Yield sorted direct project directories contained in the resolved root."""
+    try:
+        projects = sorted(projects_root.iterdir())
+    except OSError:
+        return
+    for project in projects:
+        if project.is_symlink() or not project.is_dir():
             continue
-        if path.is_symlink() or not path.is_file():
-            continue
-        if not _is_contained(path, root_real):
-            continue
-        yield path
+        if _is_contained(project, root_real):
+            yield project
 
 
 def iter_claude_files(projects_root: Path) -> Iterator[Path]:
@@ -51,16 +68,7 @@ def iter_claude_files(projects_root: Path) -> Iterator[Path]:
         root_real = projects_root.resolve()
     except OSError:
         return
-    try:
-        projects = sorted(projects_root.iterdir())
-    except OSError:
-        return
-
-    for project in projects:
-        if project.is_symlink() or not project.is_dir():
-            continue
-        if not _is_contained(project, root_real):
-            continue
+    for project in _iter_projects(projects_root, root_real):
         yield from _iter_project_transcripts(project, root_real)
 
 
@@ -73,23 +81,36 @@ def _read_head_chunk(handle: BinaryIO, limit: int, consumed: int) -> tuple[bytes
     return chunk, consumed + len(chunk), chunk_size
 
 
+def _read_head_line(handle: BinaryIO, limit: int, consumed: int) -> tuple[bytes | None, int]:
+    """Read one complete line within the byte budget; a ``None`` line means stop."""
+    buffer = b""
+    while consumed < limit:
+        chunk, consumed, chunk_size = _read_head_chunk(handle, limit, consumed)
+        if chunk is None:
+            return None, consumed
+        buffer += chunk
+        if buffer.endswith(b"\n"):
+            return buffer, consumed
+        if len(chunk) < chunk_size:
+            return None, consumed
+    return None, consumed
+
+
+def _iter_complete_lines(handle: BinaryIO, limit: int) -> Iterator[bytes]:
+    """Yield complete lines from ``handle`` while staying within ``limit`` bytes."""
+    consumed = 0
+    while consumed < limit:
+        line, consumed = _read_head_line(handle, limit, consumed)
+        if line is None:
+            return
+        yield line
+
+
 def _iter_head_lines(path: Path, limit: int) -> Iterator[bytes]:
     """Yield complete lines from the head of a file, bounded by ``limit`` bytes."""
-    consumed = 0
-    buffer = b""
     try:
         with path.open("rb") as handle:
-            while consumed < limit:
-                chunk, consumed, chunk_size = _read_head_chunk(handle, limit, consumed)
-                if chunk is None:
-                    return
-                buffer += chunk
-                if buffer.endswith(b"\n"):
-                    yield buffer
-                    buffer = b""
-                    continue
-                if len(chunk) < chunk_size:
-                    return
+            yield from _iter_complete_lines(handle, limit)
     except OSError:
         return
 

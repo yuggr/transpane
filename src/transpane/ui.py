@@ -147,6 +147,15 @@ class SnapshotOutcome:
     extracted: int = 0
 
 
+def _scan_failure(scan: ScanResult) -> SnapshotOutcome | None:
+    """Return the outcome for a scan-level failure, if the scan reported one."""
+    if scan.unsupported_mode is not None:
+        return SnapshotOutcome(failure="unsupported", unsupported_mode=scan.unsupported_mode)
+    if scan.thread_changed is not None:
+        return SnapshotOutcome(failure="thread_changed")
+    return None
+
+
 class Monitor:
     """Owns the reader, message store and translation scheduler for one session."""
 
@@ -266,22 +275,30 @@ class Monitor:
         self._emit_status()
         self._poll_task = asyncio.create_task(self._poll_loop(generation))
 
-    async def _read_snapshot(self, generation: int) -> SnapshotOutcome | None:
-        reader = self._reader
-        if reader is None:
-            return None
+    async def _scan_reader(
+        self, reader: SessionReader, generation: int
+    ) -> tuple[ScanResult | None, SnapshotOutcome | None]:
+        """Scan ``reader`` for ``generation``; return a failure outcome when it fails."""
         try:
             scan = await asyncio.to_thread(reader.scan_all)
         except (OSError, SessionError):
             if generation != self._generation:
-                return None
-            return SnapshotOutcome(failure="scan_error")
+                return None, None
+            return None, SnapshotOutcome(failure="scan_error")
         if generation != self._generation:
+            return None, None
+        return scan, None
+
+    async def _read_snapshot(self, generation: int) -> SnapshotOutcome | None:
+        reader = self._reader
+        if reader is None:
             return None
-        if scan.unsupported_mode is not None:
-            return SnapshotOutcome(failure="unsupported", unsupported_mode=scan.unsupported_mode)
-        if scan.thread_changed is not None:
-            return SnapshotOutcome(failure="thread_changed")
+        scan, failure = await self._scan_reader(reader, generation)
+        if scan is None:
+            return failure
+        failure = _scan_failure(scan)
+        if failure is not None:
+            return failure
         outcome = SnapshotOutcome(extracted=scan.stats.extracted)
         selected = self._set_scan_entries(scan)
         try:

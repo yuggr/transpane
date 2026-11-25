@@ -222,22 +222,29 @@ def _excluded_by_flag(record: dict[str, Any]) -> bool:
     return False
 
 
+def _block_text(block: object, ignored_blocks: frozenset[str]) -> tuple[bool, str | None]:
+    """Accept a content block and return its text, ``None`` for ignored blocks."""
+    if not isinstance(block, dict):
+        return False, None
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text")
+        if not isinstance(text, str):
+            return False, None
+        return True, text if text.strip() else None
+    if block_type in ignored_blocks:
+        return True, None
+    return False, None
+
+
 def _texts_from_blocks(blocks: list, ignored_blocks: frozenset[str]) -> list[str] | None:
     texts: list[str] = []
     for block in blocks:
-        if not isinstance(block, dict):
+        accepted, text = _block_text(block, ignored_blocks)
+        if not accepted:
             return None
-        block_type = block.get("type")
-        if block_type == "text":
-            text = block.get("text")
-            if not isinstance(text, str):
-                return None
-            if text.strip():
-                texts.append(text)
-        elif block_type in ignored_blocks:
-            continue
-        else:
-            return None
+        if text is not None:
+            texts.append(text)
     return texts
 
 

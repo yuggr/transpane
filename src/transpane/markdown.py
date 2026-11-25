@@ -134,25 +134,41 @@ def _is_single_line_block(block_map: tuple[int, int] | None) -> bool:
     return block_map is not None and block_map[1] - block_map[0] == 1
 
 
+def _heading_allowed(token: Token, stack: list[str]) -> bool:
+    markup = token.markup
+    return _container_depth(stack) == 0 and isinstance(markup, str) and markup.startswith("#")
+
+
+def _paragraph_container(stack: list[str]) -> str:
+    if "list_item_open" in stack:
+        return "list_item"
+    if "blockquote_open" in stack:
+        return "blockquote"
+    return "paragraph"
+
+
 def _record_allowed(allowed: dict[int, str], token: Token, stack: list[str]) -> None:
     block_map = token.map
     if block_map is None or not _is_single_line_block(block_map):
         return
     line_index = block_map[0]
-    container_depth = _container_depth(stack)
     if token.type == "heading_open":
-        markup = token.markup
-        if container_depth == 0 and isinstance(markup, str) and markup.startswith("#"):
+        if _heading_allowed(token, stack):
             allowed[line_index] = "heading"
         return
-    if token.type != "paragraph_open" or container_depth > 1:
-        return
-    if "list_item_open" in stack:
-        allowed[line_index] = "list_item"
-    elif "blockquote_open" in stack:
-        allowed[line_index] = "blockquote"
-    else:
-        allowed[line_index] = "paragraph"
+    if token.type == "paragraph_open" and _container_depth(stack) <= 1:
+        allowed[line_index] = _paragraph_container(stack)
+
+
+def _has_nested_item(list_items: list[tuple[int, int]], index: int) -> bool:
+    start, end = list_items[index]
+    for other_index, (other_start, other_end) in enumerate(list_items):
+        if other_index == index:
+            continue
+        contained = start <= other_start and other_end <= end
+        if contained and (start, end) != (other_start, other_end):
+            return True
+    return False
 
 
 def _nested_list_ranges(tokens: list[Token]) -> list[tuple[int, int]]:
@@ -161,16 +177,11 @@ def _nested_list_ranges(tokens: list[Token]) -> list[tuple[int, int]]:
         for token in tokens
         if token.type == "list_item_open" and token.map is not None
     ]
-    ranges: list[tuple[int, int]] = []
-    for index, (start, end) in enumerate(list_items):
-        for other_index, (other_start, other_end) in enumerate(list_items):
-            if index == other_index:
-                continue
-            contains_other = start <= other_start and other_end <= end
-            if contains_other and (start, end) != (other_start, other_end):
-                ranges.append((start, end))
-                break
-    return ranges
+    return [
+        item
+        for item_index, item in enumerate(list_items)
+        if _has_nested_item(list_items, item_index)
+    ]
 
 
 def _drop_allowed_ranges(allowed: dict[int, str], ranges: list[tuple[int, int]]) -> None:
@@ -289,7 +300,7 @@ def _inside_marker(text: str, index: int, spans: list[tuple[int, int]]) -> bool:
     return any(start < index < end for start, end in spans)
 
 
-def _find_cut(
+def _find_punctuation_cut(
     text: str, start: int, window_end: int, marker_spans: list[tuple[int, int]]
 ) -> int | None:
     for index in range(window_end, start, -1):
@@ -297,12 +308,27 @@ def _find_cut(
             continue
         if text[index - 1] in ".!?;:," and index < len(text) and text[index] in " \t":
             return index
+    return None
+
+
+def _find_whitespace_cut(
+    text: str, start: int, window_end: int, marker_spans: list[tuple[int, int]]
+) -> int | None:
     for index in range(window_end, start, -1):
         if _inside_marker(text, index, marker_spans):
             continue
         if text[index] in " \t":
             return index
     return None
+
+
+def _find_cut(
+    text: str, start: int, window_end: int, marker_spans: list[tuple[int, int]]
+) -> int | None:
+    cut = _find_punctuation_cut(text, start, window_end, marker_spans)
+    if cut is not None:
+        return cut
+    return _find_whitespace_cut(text, start, window_end, marker_spans)
 
 
 def split_protected(text: str, limit: int = MAX_SEGMENT_CHARS) -> list[tuple[str, str]] | None:
