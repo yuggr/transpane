@@ -36,6 +36,7 @@ from .models import (
 )
 from .session import (
     IndexEntry,
+    PollResult,
     ScanResult,
     SessionError,
     SessionIndexMismatch,
@@ -137,6 +138,15 @@ class ViewerListener(Protocol):
     def on_status(self, status: ViewerStatus) -> None: ...
 
 
+@dataclass(slots=True)
+class SnapshotOutcome:
+    messages: list[Message] | None = None
+    failure: str | None = None
+    unsupported_mode: str | None = None
+    read_error: SessionReadError | None = None
+    extracted: int = 0
+
+
 class Monitor:
     """Owns the reader, message store and translation scheduler for one session."""
 
@@ -221,48 +231,67 @@ class Monitor:
             session, self._config.sessions_root, self._config.claude_projects_root
         )
         self._reader = reader
-        try:
-            scan = await asyncio.to_thread(reader.scan_all)
-        except (OSError, SessionError):
-            if generation != self._generation:
-                return
+        outcome = await self._read_snapshot(generation)
+        if outcome is None:
+            return
+        if outcome.failure == "scan_error":
             self._stop("ログを読み取れません（許可範囲外の可能性）", reset=True)
             return
-        if generation != self._generation:
-            return
-
-        if scan.unsupported_mode is not None:
+        if outcome.failure == "unsupported":
             self._stop(
-                f"未対応の履歴形式: {scan.unsupported_mode}（本文は送信しません）",
+                f"未対応の履歴形式: {outcome.unsupported_mode}（本文は送信しません）",
                 reset=True,
             )
             return
-        if scan.thread_changed is not None:
+        if outcome.failure == "thread_changed":
             self._stop(
                 "ログのセッションIDが変更されました（自動切替しません）",
                 reset=True,
             )
             return
-        if scan.stats.extracted == 0:
+        if generation != self._generation:
+            return
+        if outcome.extracted == 0:
             self._note = "対象イベント未検出（ログ形式または内部イベントのみ）"
+        if outcome.failure == "index_mismatch":
+            await self._rebuild(generation, note="索引不一致のため再構築しました")
+            return
+        if outcome.failure == "read_error":
+            self._stop(self._read_error_note(outcome.read_error), reset=True)
+            return
 
+        self._replace_views(session, outcome.messages or [])
+        self._emit_status()
+        self._poll_task = asyncio.create_task(self._poll_loop(generation))
+
+    async def _read_snapshot(self, generation: int) -> SnapshotOutcome | None:
+        reader = self._reader
+        if reader is None:
+            return None
+        try:
+            scan = await asyncio.to_thread(reader.scan_all)
+        except (OSError, SessionError):
+            if generation != self._generation:
+                return None
+            return SnapshotOutcome(failure="scan_error")
+        if generation != self._generation:
+            return None
+        if scan.unsupported_mode is not None:
+            return SnapshotOutcome(failure="unsupported", unsupported_mode=scan.unsupported_mode)
+        if scan.thread_changed is not None:
+            return SnapshotOutcome(failure="thread_changed")
+        outcome = SnapshotOutcome(extracted=scan.stats.extracted)
         selected = self._set_scan_entries(scan)
         try:
             messages = await asyncio.to_thread(reader.read_messages, selected) if selected else []
         except SessionIndexMismatch:
-            if generation == self._generation:
-                await self._rebuild(generation, note="索引不一致のため再構築しました")
-            return
+            return SnapshotOutcome(failure="index_mismatch")
         except SessionReadError as exc:
-            if generation == self._generation:
-                self._stop(self._read_error_note(exc), reset=True)
-            return
+            return SnapshotOutcome(failure="read_error", read_error=exc)
         if generation != self._generation:
-            return
-
-        self._replace_views(session, messages)
-        self._emit_status()
-        self._poll_task = asyncio.create_task(self._poll_loop(generation))
+            return None
+        outcome.messages = messages
+        return outcome
 
     async def add_history(self) -> None:
         if self._stopped:
@@ -276,15 +305,29 @@ class Monitor:
         end = len(self._entries) - self._visible
         start = max(0, end - HISTORY_PAGE_SIZE)
         selected = self._entries[start:end]
+        messages = await self._read_history_page(selected, generation)
+        if messages is None:
+            return
+        if generation != self._generation or self._stopped:
+            return
+        self._visible += len(selected)
+        self._prepend_views(messages)
+        self._emit_status()
+
+    async def _read_history_page(
+        self, selected: list[IndexEntry], generation: int
+    ) -> list[Message] | None:
+        if self._reader is None:
+            return None
         try:
-            messages = await asyncio.to_thread(self._reader.read_messages, selected)
+            return await asyncio.to_thread(self._reader.read_messages, selected)
         except SessionIndexMismatch:
             if generation == self._generation:
                 await self._rebuild(generation, note="索引不一致のため再構築しました")
-            return
+            return None
         except SessionReadError as exc:
             if generation != self._generation:
-                return
+                return None
             if exc.reason in ("missing", "read"):
                 self._note = (
                     "ログ取得停止（ファイルが見つかりません）"
@@ -292,11 +335,11 @@ class Monitor:
                     else "ログを読み取れません"
                 )
                 self._emit_status()
-                return
+                return None
             self._stop(self._read_error_note(exc))
-            return
-        if generation != self._generation or self._stopped:
-            return
+            return None
+
+    def _prepend_views(self, messages: list[Message]) -> list[MessageView]:
         added: list[MessageView] = []
         for message in messages:
             key = (message.thread_id, message.message_id)
@@ -305,15 +348,15 @@ class Monitor:
             view = self._make_view(message)
             self._views[key] = view
             added.append(view)
-        self._visible += len(selected)
-        if added:
-            self._order = [
-                (view.message.thread_id, view.message.message_id) for view in added
-            ] + self._order
-            self._listener.on_prepended(added)
-            for view in added:
-                self._schedule(view, priority=2)
-        self._emit_status()
+        if not added:
+            return added
+        self._order = [
+            (view.message.thread_id, view.message.message_id) for view in added
+        ] + self._order
+        self._listener.on_prepended(added)
+        for view in added:
+            self._schedule(view, priority=2)
+        return added
 
     async def retry(self) -> None:
         if self._stopped:
@@ -333,19 +376,20 @@ class Monitor:
         for view in list(self._views.values()):
             if view.message.kind is MessageKind.USER:
                 continue
-            failed_units = [
-                unit for unit in view.doc.translatable_units if unit.unit_id in view.failed
-            ]
-            if not failed_units:
-                continue
-            for unit in failed_units:
-                view.failed.discard(unit.unit_id)
-                view.pending.add(unit.unit_id)
-                self._submit_unit(view, unit, priority=0)
-            view.error_labels.clear()
-            view.refresh_state()
-            self._listener.on_updated(view)
+            self._retry_view(view)
         self._emit_status()
+
+    def _retry_view(self, view: MessageView) -> None:
+        failed_units = [unit for unit in view.doc.translatable_units if unit.unit_id in view.failed]
+        if not failed_units:
+            return
+        for unit in failed_units:
+            view.failed.discard(unit.unit_id)
+            view.pending.add(unit.unit_id)
+            self._submit_unit(view, unit, priority=0)
+        view.error_labels.clear()
+        view.refresh_state()
+        self._listener.on_updated(view)
 
     async def close(self) -> None:
         self._generation += 1
@@ -368,28 +412,33 @@ class Monitor:
                 self._note = "ログを読み取れません"
                 self._emit_status()
                 continue
-            if generation != self._generation:
+            if not await self._handle_poll_result(result, generation):
                 return
-            if result.denied:
-                self._stop("監視停止（許可範囲外のパスです）")
-                return
-            if result.missing:
-                self._note = "ログ取得停止（ファイルが見つかりません）"
-                self._emit_status()
-                continue
-            if result.rebuilt:
-                await self._rebuild(generation)
-                return
-            if result.thread_changed is not None:
-                self._stop("ログのセッションIDが変更されました（自動切替しません）")
-                return
-            if result.messages:
-                if self._note is not None:
-                    self._note = None
-                await self._ingest(result.messages, result.entries, generation)
-            elif self._note is not None:
-                self._note = None
+
+    async def _handle_poll_result(self, result: PollResult, generation: int) -> bool:
+        if generation != self._generation:
+            return False
+        if result.denied:
+            self._stop("監視停止（許可範囲外のパスです）")
+            return False
+        if result.missing:
+            self._note = "ログ取得停止（ファイルが見つかりません）"
             self._emit_status()
+            return True
+        if result.rebuilt:
+            await self._rebuild(generation)
+            return False
+        if result.thread_changed is not None:
+            self._stop("ログのセッションIDが変更されました（自動切替しません）")
+            return False
+        if result.messages:
+            if self._note is not None:
+                self._note = None
+            await self._ingest(result.messages, result.entries, generation)
+        elif self._note is not None:
+            self._note = None
+        self._emit_status()
+        return True
 
     async def _rebuild(
         self, generation: int, note: str = "ログが置換/縮小されたため再構築しました"
@@ -404,51 +453,40 @@ class Monitor:
         self._stopped = True
         self._scheduler.cancel_generation(old_generation)
         self._clear_pending()
-        try:
-            scan = await asyncio.to_thread(self._reader.scan_all)
-        except (OSError, SessionError):
-            if generation != self._generation:
-                return
+        outcome = await self._read_snapshot(generation)
+        if outcome is None:
+            return
+        if outcome.failure == "scan_error":
             self._stop("ログを読み取れません（許可範囲外の可能性）", reset=True)
             return
-        if generation != self._generation:
-            return
-        if scan.unsupported_mode is not None:
+        if outcome.failure == "unsupported":
             self._stop(
-                f"未対応の履歴形式: {scan.unsupported_mode}（本文は送信しません）",
+                f"未対応の履歴形式: {outcome.unsupported_mode}（本文は送信しません）",
                 reset=True,
             )
             return
-        if scan.thread_changed is not None:
+        if outcome.failure == "thread_changed":
             self._stop(
                 "ログのセッションIDが変更されました（自動切替しません）",
                 reset=True,
             )
             return
+        if generation != self._generation:
+            return
         self._note = note
-        if scan.stats.extracted == 0:
+        if outcome.extracted == 0:
             self._note += " / 対象イベント未検出"
-        selected = self._set_scan_entries(scan)
-        try:
-            messages = (
-                await asyncio.to_thread(self._reader.read_messages, selected) if selected else []
-            )
-        except SessionIndexMismatch:
-            if generation != self._generation:
-                return
+        if outcome.failure == "index_mismatch":
             self._stop(
                 "索引とログの内容が一致しません（監視停止）",
                 reset=True,
             )
             return
-        except SessionReadError as exc:
-            if generation == self._generation:
-                self._stop(self._read_error_note(exc), reset=True)
-            return
-        if generation != self._generation:
+        if outcome.failure == "read_error":
+            self._stop(self._read_error_note(outcome.read_error), reset=True)
             return
         self._stopped = False
-        self._replace_views(self._session, messages)
+        self._replace_views(self._session, outcome.messages or [])
         self._emit_status()
         self._poll_task = asyncio.create_task(self._poll_loop(generation))
 
@@ -463,35 +501,40 @@ class Monitor:
             key = (message.thread_id, message.message_id)
             view = self._views.get(key)
             if view is not None:
-                if view.message.revision == message.revision:
-                    continue
-                view.message = message
-                view.doc = protect_document(message.original)
-                view.translations.clear()
-                view.failed.clear()
-                view.pending.clear()
-                view.error_labels.clear()
-                view.state = (
-                    TranslationState.SKIPPED
-                    if message.kind is MessageKind.USER
-                    else initial_state(view.doc)
-                )
-                self._store_entry(entry)
-                self._listener.on_updated(view)
-                self._schedule(view, priority=0)
+                self._update_view(view, message, entry)
                 continue
-
             if message.message_id in self._entry_positions:
                 self._store_entry(entry)
                 continue
+            self._append_view(message, entry)
 
-            view = self._make_view(message)
-            self._views[key] = view
-            self._order.append(key)
-            self._store_entry(entry)
-            self._visible += 1
-            self._listener.on_added(view)
-            self._schedule(view, priority=0)
+    def _update_view(self, view: MessageView, message: Message, entry: IndexEntry) -> None:
+        if view.message.revision == message.revision:
+            return
+        view.message = message
+        view.doc = protect_document(message.original)
+        view.translations.clear()
+        view.failed.clear()
+        view.pending.clear()
+        view.error_labels.clear()
+        view.state = (
+            TranslationState.SKIPPED
+            if message.kind is MessageKind.USER
+            else initial_state(view.doc)
+        )
+        self._store_entry(entry)
+        self._listener.on_updated(view)
+        self._schedule(view, priority=0)
+
+    def _append_view(self, message: Message, entry: IndexEntry) -> None:
+        key = (message.thread_id, message.message_id)
+        view = self._make_view(message)
+        self._views[key] = view
+        self._order.append(key)
+        self._store_entry(entry)
+        self._visible += 1
+        self._listener.on_added(view)
+        self._schedule(view, priority=0)
 
     def _store_entry(self, entry: IndexEntry) -> None:
         position = self._entry_positions.get(entry.message_id)
@@ -588,15 +631,8 @@ class Monitor:
     def _on_unit_done(
         self, ref: TaskRef, ok: bool, translated: str | None, error: str | None
     ) -> None:
-        if self._stopped or ref.generation != self._generation:
-            return
-        if self._session is None or ref.thread_id != self._session.thread_id:
-            return
-        view = self._views.get((ref.thread_id, ref.message_id))
-        if view is None or view.message.revision != ref.revision:
-            return
-        unit_ids = {unit.unit_id for unit in view.doc.translatable_units}
-        if ref.unit_id not in unit_ids:
+        view = self._result_view(ref)
+        if view is None:
             return
         view.pending.discard(ref.unit_id)
         if ok and translated is not None:
@@ -609,6 +645,19 @@ class Monitor:
         self._last_update = datetime.now().strftime("%H:%M:%S")
         self._listener.on_updated(view)
         self._emit_status()
+
+    def _result_view(self, ref: TaskRef) -> MessageView | None:
+        if self._stopped or ref.generation != self._generation:
+            return None
+        if self._session is None or ref.thread_id != self._session.thread_id:
+            return None
+        view = self._views.get((ref.thread_id, ref.message_id))
+        if view is None or view.message.revision != ref.revision:
+            return None
+        unit_ids = {unit.unit_id for unit in view.doc.translatable_units}
+        if ref.unit_id not in unit_ids:
+            return None
+        return view
 
     def _on_scheduler_status(self, status: SchedulerStatus) -> None:
         self._scheduler_status = status

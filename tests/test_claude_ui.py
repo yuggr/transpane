@@ -26,6 +26,7 @@ from support import (
 )
 from transpane.models import AgentProvider, TranslationState
 from transpane.session import (
+    SessionIndexMismatch,
     SessionReader,
     SessionReadError,
     discover_all_sessions,
@@ -998,4 +999,31 @@ async def test_monitor_denied_path_cancels_pending_translation(tmp_path):
     assert len(calls) == 1
     assert "訳:late" not in view.display_text()
     assert view.state is not TranslationState.TRANSLATED
+    await monitor.close()
+
+
+async def test_switch_index_mismatch_rebuilds_instead_of_stopping(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    write_claude_session(config.claude_projects_root, CLAUDE_ID, [claude_user(CLAUDE_ID, "hello")])
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    original = SessionReader.read_messages
+    calls = {"count": 0}
+
+    def mismatch_once(self, entries):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise SessionIndexMismatch()
+        return original(self, entries)
+
+    monkeypatch.setattr(SessionReader, "read_messages", mismatch_once)
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    assert monitor._note is not None and "索引不一致" in monitor._note
+    assert not monitor._stopped
+    assert calls["count"] >= 2
     await monitor.close()
