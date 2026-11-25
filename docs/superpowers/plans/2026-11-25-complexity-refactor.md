@@ -586,7 +586,7 @@ git diff --check
 git diff 507a820 --stat
 ```
 
-Expected: 213 passed、lint/format clean、whitespace error なし。`git diff 507a820 --stat`
+Expected: 214 passed、lint/format clean、whitespace error なし。`git diff 507a820 --stat`
 に `src/`・追加テスト・`docs/superpowers/specs/2026-11-25-complexity-refactor-design.md`・
 本レポート以外が出ない。
 
