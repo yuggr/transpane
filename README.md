@@ -27,20 +27,6 @@ uv run transpane --help
 
 `uv run transpane` は `uv.lock` に固定された依存で動作します。
 
-### 旧名称 `codex-ja` からの移行
-
-設定・キャッシュのパスも `transpane` に変わりました。旧パスは自動では参照しません。
-必要に応じて手動で移動してください。
-
-```bash
-mkdir -p ~/.config/transpane
-mv ~/.config/codex-ja/config.toml ~/.config/transpane/config.toml
-
-# キャッシュを引き継ぐ場合のみ（任意）
-mkdir -p ~/.cache/transpane
-mv ~/.cache/codex-ja/translations.sqlite3 ~/.cache/transpane/translations.sqlite3
-```
-
 ## 設定
 
 設定ファイル: `${XDG_CONFIG_HOME:-~/.config}/transpane/config.toml`
