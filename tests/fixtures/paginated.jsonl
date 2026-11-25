@@ -1,0 +1,4 @@
+{"timestamp":"2026-11-25T01:00:00Z","type":"session_meta","payload":{"id":"new-thread","cwd":"/tmp/demo","history_mode":"paginated"}}
+{"timestamp":"2026-11-25T01:00:01Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"保存処理を調べて"}]}}}
+{"timestamp":"2026-11-25T01:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"AgentMessage","id":"a1","phase":"commentary","content":[{"type":"Text","text":"I will inspect the storage layer."}]}}}
+{"timestamp":"2026-11-25T01:00:03Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"AgentMessage","id":"a2","phase":"final_answer","content":[{"type":"Text","text":"The tests passed."}]}}}

@@ -1,0 +1,4 @@
+{"timestamp":"2026-11-25T01:00:00Z","type":"session_meta","payload":{"id":"legacy-thread","cwd":"/tmp/demo","history_mode":"legacy"}}
+{"timestamp":"2026-11-25T01:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"保存処理を調べて"}}
+{"timestamp":"2026-11-25T01:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"I will inspect the storage layer.","phase":"commentary"}}
+{"timestamp":"2026-11-25T01:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will inspect the storage layer."}]}}
