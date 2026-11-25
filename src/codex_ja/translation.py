@@ -270,7 +270,11 @@ class TranslationScheduler:
         try:
             await self._client.list_models()
         except TranslationFailure as exc:
-            self._connection = ConnectionState.FAILED
+            if exc.server_unavailable:
+                self._connection = ConnectionState.FAILED
+            else:
+                # The server answered, so the transport itself is reachable.
+                self._connection = ConnectionState.CONNECTED
             self._error = exc.kind.label
             self._emit_status()
             return False

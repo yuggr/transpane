@@ -10,6 +10,7 @@ import pytest
 from codex_ja.cache import TranslationCache, cache_key
 from codex_ja.markdown import Segment
 from codex_ja.translation import (
+    ConnectionState,
     ErrorKind,
     SchedulerStatus,
     TaskRef,
@@ -379,9 +380,16 @@ def test_scheduler_pauses_on_server_error_and_resumes(tmp_path):
     outcomes: list = []
     statuses: list[SchedulerStatus] = []
     fail = {"value": True}
+    models_mode = {"value": "ok"}
 
     def handler(request):
         if request.method == "GET":
+            if models_mode["value"] == "404":
+                return httpx.Response(404, json={})
+            if models_mode["value"] == "invalid":
+                return httpx.Response(200, content=b"not json")
+            if models_mode["value"] == "500":
+                return httpx.Response(500, json={})
             return httpx.Response(200, json={"data": [{"id": "m"}]})
         if fail["value"]:
             return httpx.Response(503, json={})
@@ -394,13 +402,37 @@ def test_scheduler_pauses_on_server_error_and_resumes(tmp_path):
         await wait_until(lambda: len(outcomes) == 1)
         assert scheduler.paused is True
         assert outcomes[0][1] is False
+        assert statuses[-1].connection is ConnectionState.FAILED
 
         scheduler.submit(ref("m2"), [segment("Second.")])
         await asyncio.sleep(0.05)
         assert len(outcomes) == 1
 
+        # A server response, even an error response, proves the transport works.
+        models_mode["value"] = "404"
+        assert await scheduler.reconnect() is False
+        assert scheduler.paused is True
+        assert statuses[-1].connection is ConnectionState.CONNECTED
+        assert statuses[-1].error == "HTTPエラー"
+
+        models_mode["value"] = "invalid"
+        assert await scheduler.reconnect() is False
+        assert scheduler.paused is True
+        assert statuses[-1].connection is ConnectionState.CONNECTED
+        assert statuses[-1].error == "応答形式不正"
+
+        models_mode["value"] = "500"
+        assert await scheduler.reconnect() is False
+        assert scheduler.paused is True
+        assert statuses[-1].connection is ConnectionState.FAILED
+        assert statuses[-1].error == "HTTPエラー"
+
+        models_mode["value"] = "ok"
         fail["value"] = False
         assert await scheduler.reconnect() is True
+        assert scheduler.paused is False
+        assert statuses[-1].connection is ConnectionState.CONNECTED
+        assert statuses[-1].error is None
         await wait_until(lambda: len(outcomes) == 2)
         assert outcomes[1][1] is True
         await stop(scheduler, task)
@@ -428,6 +460,7 @@ def test_scheduler_cancels_old_thread(tmp_path):
 
 def test_scheduler_partial_failure_marks_unit_failed(tmp_path):
     outcomes: list = []
+    statuses: list[SchedulerStatus] = []
 
     def handler(request):
         text = json.loads(request.content)["messages"][1]["content"]
@@ -441,7 +474,7 @@ def test_scheduler_partial_failure_marks_unit_failed(tmp_path):
     ]
 
     async def scenario():
-        scheduler, _ = make_scheduler(handler, tmp_path, outcomes, [])
+        scheduler, _ = make_scheduler(handler, tmp_path, outcomes, statuses)
         task = asyncio.create_task(scheduler.run())
         scheduler.submit(ref(), segments)
         await wait_until(lambda: len(outcomes) == 1)
@@ -450,6 +483,8 @@ def test_scheduler_partial_failure_marks_unit_failed(tmp_path):
     run(scenario())
     assert outcomes[0][1] is False
     assert outcomes[0][2] is None
+    assert statuses[-1].connection is ConnectionState.CONNECTED
+    assert statuses[-1].paused is False
 
 
 def test_scheduler_never_exceeds_one_http_request(tmp_path):
