@@ -137,16 +137,20 @@ def _meta_values(record: dict) -> tuple[str | None, str | None]:
     )
 
 
+def _parse_head_record(line: bytes) -> dict | None:
+    """Decode one JSONL line, returning ``None`` for unreadable non-objects."""
+    try:
+        record = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def read_claude_meta(path: Path) -> tuple[str | None, str | None] | None:
     """Confirm the session ID from the first eligible record and read its metadata."""
     for line in _iter_head_lines(path, META_READ_LIMIT):
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        if not _is_eligible_record(record, path.stem):
+        record = _parse_head_record(line)
+        if record is None or not _is_eligible_record(record, path.stem):
             continue
         return _meta_values(record)
     return None
