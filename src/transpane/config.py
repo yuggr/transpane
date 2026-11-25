@@ -49,6 +49,8 @@ class ConfigError(Exception):
 class Config:
     codex_home: Path
     sessions_root: Path
+    claude_home: Path
+    claude_projects_root: Path
     base_url: str
     model: str
     form: str
@@ -122,6 +124,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     environment = os.environ if env is None else env
 
     codex_home = Path(environment.get("CODEX_HOME") or "~/.codex").expanduser()
+    claude_home = Path(environment.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
     config_home = Path(environment.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
     cache_home = Path(environment.get("XDG_CACHE_HOME") or "~/.cache").expanduser()
 
@@ -160,6 +163,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     return Config(
         codex_home=codex_home,
         sessions_root=codex_home / "sessions",
+        claude_home=claude_home,
+        claude_projects_root=claude_home / "projects",
         base_url=base_url,
         model=model,
         form=form,

@@ -1,7 +1,7 @@
 [project]
 name = "transpane"
 version = "0.1.0"
-description = "Japanese presentation layer for existing Codex CLI sessions"
+description = "Japanese presentation layer for existing Codex and Claude Code CLI sessions"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

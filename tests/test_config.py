@@ -15,6 +15,7 @@ def test_load_config_reads_all_values(tmp_path):
     )
     env = {
         "CODEX_HOME": str(tmp_path / "codex"),
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
     }
@@ -23,7 +24,23 @@ def test_load_config_reads_all_values(tmp_path):
     assert config.model == "plamo-3-translate-2b"
     assert config.form == "plain"
     assert config.sessions_root == tmp_path / "codex" / "sessions"
+    assert config.claude_home == tmp_path / "claude"
+    assert config.claude_projects_root == tmp_path / "claude" / "projects"
     assert config.cache_path == tmp_path / "cache" / "transpane" / "translations.sqlite3"
+
+
+def test_claude_config_dir_falls_back_when_empty(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config" / "transpane"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.toml").write_text('[translation]\nmodel = "m"\n', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    env = {
+        "CLAUDE_CONFIG_DIR": "",
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+    }
+    config = load_config(env)
+    assert config.claude_home == tmp_path / "home" / ".claude"
+    assert config.claude_projects_root == tmp_path / "home" / ".claude" / "projects"
 
 
 def test_missing_model_is_an_error(tmp_path):

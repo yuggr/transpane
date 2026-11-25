@@ -7,7 +7,6 @@ import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Protocol
 
 from textual.app import App, ComposeResult
@@ -28,13 +27,21 @@ from .config import (
 )
 from .markdown import ProtectedDoc, protect_document
 from .models import (
+    AgentProvider,
     Message,
     MessageKind,
     SessionInfo,
     TranslationState,
     format_timestamp,
 )
-from .session import SessionReader, discover_sessions, sessions_for_cwd
+from .session import (
+    IndexEntry,
+    SessionError,
+    SessionReader,
+    discover_all_sessions,
+    reader_for_session,
+    sessions_for_cwd,
+)
 from .translation import (
     SchedulerStatus,
     TaskRef,
@@ -112,6 +119,7 @@ class ViewerStatus:
     note: str | None = None
     error: str | None = None
     cache_note: str | None = None
+    session: str | None = None
 
 
 class ViewerListener(Protocol):
@@ -140,12 +148,14 @@ class Monitor:
         self._session: SessionInfo | None = None
         self._reader: SessionReader | None = None
         self._generation = 0
-        self._entries: list = []
+        self._entries: list[IndexEntry] = []
+        self._entry_positions: dict[str, int] = {}
         self._visible = 0
         self._views: dict[tuple[str, str], MessageView] = {}
         self._order: list[tuple[str, str]] = []
         self._poll_task: asyncio.Task | None = None
         self._worker_task: asyncio.Task | None = None
+        self._session_label: str | None = None
 
         self._cache = TranslationCache(config.cache_path)
         self._cache_status = self._cache.open()
@@ -184,26 +194,37 @@ class Monitor:
 
     async def switch(self, session: SessionInfo) -> None:
         self._ensure_worker()
-        previous = self._session
+        old_generation = self._generation
         self._generation += 1
         generation = self._generation
+        self._scheduler.cancel_generation(old_generation)
         if self._poll_task is not None:
             self._poll_task.cancel()
             self._poll_task = None
-        if previous is not None:
-            self._scheduler.cancel_thread(previous.thread_id)
 
         self._session = session
+        self._session_label = f"{session.provider.label} / {session.display_id}"
         self._views.clear()
         self._order.clear()
         self._entries = []
+        self._entry_positions = {}
         self._visible = 0
         self._note = None
         self._last_update = datetime.now().strftime("%H:%M:%S")
 
-        reader = SessionReader(Path(session.path), session.thread_id)
+        reader = reader_for_session(
+            session, self._config.sessions_root, self._config.claude_projects_root
+        )
         self._reader = reader
-        scan = await asyncio.to_thread(reader.scan_all)
+        try:
+            scan = await asyncio.to_thread(reader.scan_all)
+        except (OSError, SessionError):
+            if generation != self._generation:
+                return
+            self._note = "ログを読み取れません（許可範囲外の可能性）"
+            self._listener.on_reset(session, [])
+            self._emit_status()
+            return
         if generation != self._generation:
             return
 
@@ -213,12 +234,17 @@ class Monitor:
             self._emit_status()
             return
         if scan.thread_changed is not None:
-            self._note = "ログのスレッドIDが変更されました（自動切替しません）"
+            self._note = "ログのセッションIDが変更されました（自動切替しません）"
             self._listener.on_reset(session, [])
             self._emit_status()
             return
+        if scan.stats.extracted == 0:
+            self._note = "対象イベント未検出（ログ形式または内部イベントのみ）"
 
         self._entries = list(scan.entries)
+        self._entry_positions = {
+            entry.message_id: index for index, entry in enumerate(self._entries)
+        }
         self._visible = min(INITIAL_MESSAGE_COUNT, len(self._entries))
         selected = self._entries[len(self._entries) - self._visible :]
         messages = await asyncio.to_thread(reader.read_messages, selected) if selected else []
@@ -319,6 +345,13 @@ class Monitor:
                 continue
             if generation != self._generation:
                 return
+            if result.denied:
+                self._generation += 1
+                self._scheduler.cancel_generation(generation)
+                self._clear_pending()
+                self._note = "監視停止（許可範囲外のパスです）"
+                self._emit_status()
+                return
             if result.missing:
                 self._note = "ログ取得停止（ファイルが見つかりません）"
                 self._emit_status()
@@ -327,13 +360,16 @@ class Monitor:
                 await self._rebuild(generation)
                 return
             if result.thread_changed is not None:
-                self._note = "ログのスレッドIDが変更されました（自動切替しません）"
+                self._generation += 1
+                self._scheduler.cancel_generation(generation)
+                self._clear_pending()
+                self._note = "ログのセッションIDが変更されました（自動切替しません）"
                 self._emit_status()
                 return
             if result.messages:
                 if self._note is not None:
                     self._note = None
-                await self._ingest(result.messages, generation)
+                await self._ingest(result.messages, result.entries, generation)
             elif self._note is not None:
                 self._note = None
             self._emit_status()
@@ -343,8 +379,20 @@ class Monitor:
             return
         if generation != self._generation:
             return
-        self._scheduler.cancel_thread(self._session.thread_id)
-        scan = await asyncio.to_thread(self._reader.scan_all)
+        old_generation = self._generation
+        self._generation += 1
+        generation = self._generation
+        self._scheduler.cancel_generation(old_generation)
+        self._clear_pending()
+        try:
+            scan = await asyncio.to_thread(self._reader.scan_all)
+        except (OSError, SessionError):
+            if generation != self._generation:
+                return
+            self._note = "ログを読み取れません（許可範囲外の可能性）"
+            self._listener.on_reset(self._session, [])
+            self._emit_status()
+            return
         if generation != self._generation:
             return
         if scan.unsupported_mode is not None:
@@ -353,11 +401,16 @@ class Monitor:
             self._emit_status()
             return
         if scan.thread_changed is not None:
-            self._note = "ログのスレッドIDが変更されました（自動切替しません）"
+            self._note = "ログのセッションIDが変更されました（自動切替しません）"
             self._emit_status()
             return
         self._note = "ログが置換/縮小されたため再構築しました"
+        if scan.stats.extracted == 0:
+            self._note += " / 対象イベント未検出"
         self._entries = list(scan.entries)
+        self._entry_positions = {
+            entry.message_id: index for index, entry in enumerate(self._entries)
+        }
         self._visible = min(INITIAL_MESSAGE_COUNT, len(self._entries))
         selected = self._entries[len(self._entries) - self._visible :]
         messages = await asyncio.to_thread(self._reader.read_messages, selected) if selected else []
@@ -377,8 +430,10 @@ class Monitor:
         self._emit_status()
         self._poll_task = asyncio.create_task(self._poll_loop(generation))
 
-    async def _ingest(self, messages: list[Message], generation: int) -> None:
-        for message in messages:
+    async def _ingest(
+        self, messages: list[Message], entries: list[IndexEntry], generation: int
+    ) -> None:
+        for message, entry in zip(messages, entries, strict=True):
             if generation != self._generation:
                 return
             key = (message.thread_id, message.message_id)
@@ -397,15 +452,37 @@ class Monitor:
                     if message.kind is MessageKind.USER
                     else initial_state(view.doc)
                 )
+                self._store_entry(entry)
                 self._listener.on_updated(view)
                 self._schedule(view, priority=0)
+                continue
+
+            if message.message_id in self._entry_positions:
+                self._store_entry(entry)
                 continue
 
             view = self._make_view(message)
             self._views[key] = view
             self._order.append(key)
+            self._store_entry(entry)
             self._listener.on_added(view)
             self._schedule(view, priority=0)
+
+    def _store_entry(self, entry: IndexEntry) -> None:
+        position = self._entry_positions.get(entry.message_id)
+        if position is None:
+            self._entry_positions[entry.message_id] = len(self._entries)
+            self._entries.append(entry)
+            return
+        self._entries[position] = entry
+
+    def _clear_pending(self) -> None:
+        for view in self._views.values():
+            if not view.pending:
+                continue
+            view.pending.clear()
+            view.refresh_state()
+            self._listener.on_updated(view)
 
     def _make_view(self, message: Message) -> MessageView:
         doc = protect_document(message.original)
@@ -476,6 +553,7 @@ class Monitor:
                     if self._cache_status.available
                     else f"{self._cache_status.message}（再起動後は再翻訳が必要です）"
                 ),
+                session=self._session_label,
             )
         )
 
@@ -496,11 +574,13 @@ class SessionScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-dialog"):
-            yield Static("セッションを選択（ID / cwd / 最終更新 / 履歴形式）", id="session-title")
+            yield Static(
+                "セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）", id="session-title"
+            )
             options = []
             for index, session in enumerate(self._sessions):
                 label = (
-                    f"{session.thread_id}  {session.cwd or 'cwd不明'}  "
+                    f"{session.provider.label}  {session.thread_id}  {session.cwd or 'cwd不明'}  "
                     f"{datetime.fromtimestamp(session.updated_at).strftime('%Y-%m-%d %H:%M:%S')}  "
                     f"{session.mode_label}"
                 )
@@ -585,12 +665,14 @@ class TranspaneApp(App[None]):
         initial_session: SessionInfo | None = None,
         cwd_filter: str | None = None,
         transport=None,
+        source: AgentProvider | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._initial_session = initial_session
         self._cwd_filter = cwd_filter
         self._transport = transport
+        self._source = source
         self._monitor: Monitor | None = None
         self._widgets: dict[tuple[str, str], MessageWidget] = {}
         self._picker_running = False
@@ -623,7 +705,12 @@ class TranspaneApp(App[None]):
         await self._monitor.switch(session)
 
     async def _pick_initial_session(self) -> None:
-        sessions = await asyncio.to_thread(discover_sessions, self._config.sessions_root)
+        sessions = await asyncio.to_thread(
+            discover_all_sessions,
+            self._config.sessions_root,
+            self._config.claude_projects_root,
+            self._source,
+        )
         self._sessions = self._filter_sessions(sessions)
         if not self._sessions:
             self._set_status_text("セッションが見つかりません。s で再検索できます。")
@@ -654,7 +741,12 @@ class TranspaneApp(App[None]):
         self.run_worker(self._discover_and_pick(), exclusive=False)
 
     async def _discover_and_pick(self) -> None:
-        sessions = await asyncio.to_thread(discover_sessions, self._config.sessions_root)
+        sessions = await asyncio.to_thread(
+            discover_all_sessions,
+            self._config.sessions_root,
+            self._config.claude_projects_root,
+            self._source,
+        )
         self._sessions = self._filter_sessions(sessions)
         if not self._sessions:
             self._set_status_text("セッションが見つかりません。s で再検索できます。")
@@ -686,7 +778,9 @@ class TranspaneApp(App[None]):
 
     def on_reset(self, session: SessionInfo | None, views: list[MessageView]) -> None:
         if self._monitor is not None and session is not None:
-            self.sub_title = f"{session.cwd or 'cwd不明'} / thread: {session.thread_id}"
+            self.sub_title = (
+                f"{session.provider.label} / {session.thread_id} / {session.cwd or 'cwd不明'}"
+            )
         container = self.query_one("#messages", MessageScroll)
         for widget in list(self._widgets.values()):
             widget.remove()
@@ -716,7 +810,8 @@ class TranspaneApp(App[None]):
         self.on_added(view)
 
     def on_status(self, status: ViewerStatus) -> None:
-        text = f"PLaMo: {status.server}"
+        text = f"{status.session} | " if status.session else ""
+        text += f"PLaMo: {status.server}"
         if status.error:
             text += f" ({status.error})"
         text += f" | 待ち: {status.pending} | 最終更新: {status.last_update}"

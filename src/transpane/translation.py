@@ -236,7 +236,7 @@ class TranslationScheduler:
         self._paused = False
         self._connection = ConnectionState.UNKNOWN
         self._error: str | None = None
-        self._cancelled: set[str] = set()
+        self._cancelled_through = -1
         self._memo: dict[str, str] = {}
 
     def submit(
@@ -245,9 +245,8 @@ class TranslationScheduler:
         segments: Sequence[Segment],
         priority: int = 0,
     ) -> None:
-        if not segments:
+        if not segments or ref.generation <= self._cancelled_through:
             return
-        self._cancelled.discard(ref.thread_id)
         task = _UnitTask(
             ref=ref,
             segments=tuple(segments),
@@ -262,8 +261,21 @@ class TranslationScheduler:
             self._deferred.append(task)
         self._emit_status()
 
-    def cancel_thread(self, thread_id: str) -> None:
-        self._cancelled.add(thread_id)
+    def cancel_generation(self, generation: int) -> None:
+        """Drop every queued job from ``generation`` or older.
+
+        The HTTP request already in flight is allowed to finish, but its
+        remaining segments and delivery are suppressed.
+        """
+        if generation <= self._cancelled_through:
+            return
+        self._cancelled_through = generation
+        kept = [item for item in self._queue if item[2].ref.generation > generation]
+        self._active = max(0, self._active - (len(self._queue) - len(kept)))
+        self._queue = kept
+        heapq.heapify(self._queue)
+        self._deferred = deque(task for task in self._deferred if task.ref.generation > generation)
+        self._promote()
         self._emit_status()
 
     async def reconnect(self) -> bool:
@@ -303,13 +315,19 @@ class TranslationScheduler:
                 await self._wake.wait()
                 continue
 
-            if task.ref.thread_id in self._cancelled:
+            if task.ref.generation <= self._cancelled_through:
                 self._finish_task(task, cancelled=True)
                 continue
 
             ok, translated, error = await self._translate_segment(task)
             task.results.append((ok, translated, error))
             task.next_index += 1
+
+            if task.ref.generation <= self._cancelled_through:
+                task.results[-1] = (False, None, ErrorKind.CANCELLED.value)
+                task.next_index = len(task.segments)
+                self._deliver(task)
+                continue
 
             if task.next_index < len(task.segments):
                 heapq.heappush(self._queue, (task.priority, task.sequence, task))
@@ -361,7 +379,7 @@ class TranslationScheduler:
             translated = "".join(pieces)
         else:
             error = next((err for ok, _, err in task.results if not ok), "invalid")
-        if task.ref.thread_id in self._cancelled:
+        if task.ref.generation <= self._cancelled_through:
             translated = None
             error = ErrorKind.CANCELLED.value
         self._on_unit_done(task.ref, all_ok, translated, error)

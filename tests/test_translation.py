@@ -440,19 +440,64 @@ def test_scheduler_pauses_on_server_error_and_resumes(tmp_path):
     run(scenario())
 
 
-def test_scheduler_cancels_old_thread(tmp_path):
+def test_scheduler_cancels_old_generation_and_does_not_revive_it(tmp_path):
     outcomes: list = []
+    calls = []
 
     def handler(request):
+        calls.append(1)
         return ok_response("訳 Done.")
 
     async def scenario():
         scheduler, _ = make_scheduler(handler, tmp_path, outcomes, [])
-        scheduler.submit(ref("m1", thread="old"), [segment()])
-        scheduler.cancel_thread("old")
+        scheduler.submit(ref("m1", generation=1), [segment()])
+        scheduler.cancel_generation(1)
+        scheduler.submit(ref("m1", generation=1), [segment()])
         task = asyncio.create_task(scheduler.run())
         await asyncio.sleep(0.1)
         assert outcomes == []
+        assert calls == []
+
+        scheduler.submit(ref("m2", generation=2), [segment()])
+        await wait_until(lambda: len(outcomes) == 1)
+        assert calls == [1]
+        assert outcomes[0][0].generation == 2
+        await stop(scheduler, task)
+
+    run(scenario())
+
+
+def test_scheduler_stops_followup_segments_after_cancellation(tmp_path):
+    outcomes: list = []
+    sent: list[str] = []
+    started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def handler(request):
+        text = json.loads(request.content)["messages"][1]["content"]
+        sent.append(text)
+        if text == "First.":
+            started.set()
+            await gate.wait()
+        return ok_response("訳 " + text)
+
+    segments = [
+        Segment(text="First.", markers=(), trailing=" "),
+        Segment(text="Second.", markers=(), trailing=""),
+    ]
+
+    async def scenario():
+        scheduler, _ = make_scheduler(handler, tmp_path, outcomes, [])
+        task = asyncio.create_task(scheduler.run())
+        scheduler.submit(ref("m1", generation=1), segments)
+        await asyncio.wait_for(started.wait(), timeout=3)
+        scheduler.cancel_generation(1)
+        gate.set()
+        await wait_until(lambda: len(outcomes) == 1)
+        await asyncio.sleep(0.05)
+        assert sent == ["First."]
+        assert outcomes[0][2] is None
+        assert outcomes[0][3] == ErrorKind.CANCELLED.value
         await stop(scheduler, task)
 
     run(scenario())
