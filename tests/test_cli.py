@@ -345,3 +345,15 @@ def test_source_must_precede_subcommand(env):
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["sessions", "--source", "claude"])
     assert excinfo.value.code == 2
+
+
+def test_doctor_runs_cache_diagnostics_when_translation_fails(env, capsys, monkeypatch):
+    async def fake_models(config):
+        raise TranslationFailure(ErrorKind.CONNECT)
+
+    monkeypatch.setattr(cli, "_list_models", fake_models)
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "接続失敗" in out
+    assert "キャッシュ:" in out
