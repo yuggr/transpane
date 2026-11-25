@@ -257,7 +257,9 @@ class Monitor:
             await self._rebuild(generation, note="索引不一致のため再構築しました")
             return
         if outcome.failure == "read_error":
-            self._stop(self._read_error_note(outcome.read_error), reset=True)
+            error = outcome.read_error
+            assert error is not None
+            self._stop(self._read_error_note(error), reset=True)
             return
 
         self._replace_views(session, outcome.messages or [])
@@ -285,9 +287,12 @@ class Monitor:
         try:
             messages = await asyncio.to_thread(reader.read_messages, selected) if selected else []
         except SessionIndexMismatch:
-            return SnapshotOutcome(failure="index_mismatch")
+            outcome.failure = "index_mismatch"
+            return outcome
         except SessionReadError as exc:
-            return SnapshotOutcome(failure="read_error", read_error=exc)
+            outcome.failure = "read_error"
+            outcome.read_error = exc
+            return outcome
         if generation != self._generation:
             return None
         outcome.messages = messages
@@ -483,7 +488,9 @@ class Monitor:
             )
             return
         if outcome.failure == "read_error":
-            self._stop(self._read_error_note(outcome.read_error), reset=True)
+            error = outcome.read_error
+            assert error is not None
+            self._stop(self._read_error_note(error), reset=True)
             return
         self._stopped = False
         self._replace_views(self._session, outcome.messages or [])

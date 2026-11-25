@@ -1021,9 +1021,11 @@ async def test_switch_index_mismatch_rebuilds_instead_of_stopping(tmp_path, monk
         return original(self, entries)
 
     monkeypatch.setattr(SessionReader, "read_messages", mismatch_once)
-    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    listener = FakeListener()
+    monitor = Monitor(config, listener, transport=httpx.MockTransport(translating_handler))
     await monitor.start(session)
     assert monitor._note is not None and "索引不一致" in monitor._note
     assert not monitor._stopped
     assert calls["count"] >= 2
+    assert not any("対象イベント未検出" in (status.note or "") for status in listener.statuses)
     await monitor.close()
