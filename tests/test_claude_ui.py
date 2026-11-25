@@ -800,6 +800,66 @@ async def test_rebuild_blocks_retry_until_success(tmp_path):
     await monitor.close()
 
 
+async def test_history_denied_stop_survives_replacement_until_switch(tmp_path):
+    config = make_config(tmp_path)
+    records = [
+        claude_agent(
+            CLAUDE_ID,
+            f"Message {index:02d}.",
+            uuid=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(60)
+    ]
+    path = write_claude_session(config.claude_projects_root, CLAUDE_ID, records)
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(request.method)
+        return translating_handler(request)
+
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(handler))
+    await monitor.start(session)
+    await wait_until(lambda: len(monitor.views) == 50)
+
+    original_read = monitor._reader.read_messages
+
+    def denied(entries):
+        raise SessionReadError("denied")
+
+    monitor._reader.read_messages = denied
+    await monitor.add_history()
+    monitor._reader.read_messages = original_read
+
+    assert monitor._stopped
+    assert monitor._note is not None and "許可範囲外" in monitor._note
+    poll_task = monitor._poll_task
+    assert poll_task is not None
+    await asyncio.wait_for(poll_task, timeout=2)
+
+    before = len(requests)
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(path.read_bytes())
+    os.replace(replacement, path)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert len(requests) == before
+    assert monitor._stopped
+    assert monitor._note is not None and "許可範囲外" in monitor._note
+    assert len(monitor.views) == 50
+
+    await monitor.switch(session)
+    await wait_until(lambda: not monitor._stopped and len(monitor.views) == 50)
+    await monitor.add_history()
+    await wait_until(lambda: len(monitor.views) == 60)
+    await monitor.close()
+
+
 async def test_history_read_failure_does_not_advance_visible_and_recovers(tmp_path):
     config = make_config(tmp_path)
     records = [

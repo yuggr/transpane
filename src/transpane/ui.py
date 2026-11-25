@@ -371,7 +371,6 @@ class Monitor:
             if generation != self._generation:
                 return
             if result.denied:
-                self._generation += 1
                 self._stop("監視停止（許可範囲外のパスです）")
                 return
             if result.missing:
@@ -382,7 +381,6 @@ class Monitor:
                 await self._rebuild(generation)
                 return
             if result.thread_changed is not None:
-                self._generation += 1
                 self._stop("ログのセッションIDが変更されました（自動切替しません）")
                 return
             if result.messages:
@@ -536,6 +534,7 @@ class Monitor:
 
     def _stop(self, note: str, *, reset: bool = False) -> None:
         self._stopped = True
+        self._generation += 1
         self._scheduler.cancel_generation(self._generation)
         self._clear_pending()
         if reset:
