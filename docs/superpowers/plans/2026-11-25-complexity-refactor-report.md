@@ -89,7 +89,8 @@ before の値はベースライン計測、after の値は `8d08830` の計測�
 どちらも設計書 §5.1 の範囲で抽出を止めた結果であり、閾値超えを理由づけて残した例外ではない。
 
 `read_session_meta` は 256 KiB 断片の読み捨てと 1 MiB 上限の判定順序が契約であり（設計書 §5.1 の P2-03）、
-IO ループの条件式を動かすと意味が変わるため、payload 判定の抽出に留めた。
+1 行分の `readline` と巨大行の読み捨て判断を `_read_meta_step` へ、payload 判定を `_session_meta_payload` へ移したが、条件式と評価順序は変えていない。
+契約は characterization test 3 件で固定しており、全ブランチレビューの差分確認でも挙動の差は検出されていない。
 `_LineSplitter.feed` は状態遷移（`dropping` と `buf` の更新順）を読み取れる粒度に保つ必要があり、これ以上の分割を見送った。
 
 ### cognitive > 10 の関数
