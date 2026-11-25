@@ -8,7 +8,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 DEFAULT_FORM = "polite"
@@ -64,6 +64,13 @@ def validate_base_url(raw: str) -> str:
     Only HTTP, IP literals, loopback or RFC1918 hosts, and the /v1 path are
     accepted. Host names, userinfo, query strings and fragments are rejected.
     """
+    parts = _split_base_url(raw)
+    host = parts.hostname or ""
+    address = _validate_address(host)
+    return _normalized_url(parts, host, address)
+
+
+def _split_base_url(raw: str) -> SplitResult:
     if not isinstance(raw, str) or not raw:
         raise ConfigError("translation.base_url が空です")
     try:
@@ -80,23 +87,30 @@ def validate_base_url(raw: str) -> str:
     path = parts.path.rstrip("/") or "/"
     if path != "/v1":
         raise ConfigError("translation.base_url のパスは /v1 に限定されます")
+    return parts
 
-    host = parts.hostname
-    if host is None:
+
+def _validate_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    if not host:
         raise ConfigError("translation.base_url にホストがありません")
     try:
         address = ipaddress.ip_address(host)
     except ValueError as exc:
         raise ConfigError("translation.base_url は IP リテラルである必要があります") from exc
-
     if not _is_local_or_private(address):
         raise ConfigError("translation.base_url は loopback または RFC1918 のみ許可されます")
+    return address
 
+
+def _normalized_url(
+    parts: SplitResult,
+    host: str,
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str:
     try:
         port = parts.port or 80
     except ValueError as exc:
         raise ConfigError("translation.base_url のポートが不正です") from exc
-
     host_part = f"[{host}]" if address.version == 6 else host
     return f"http://{host_part}:{port}/v1"
 
