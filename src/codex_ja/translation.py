@@ -167,11 +167,27 @@ class TaskRef:
     unit_id: int
 
 
+class ConnectionState(StrEnum):
+    UNKNOWN = "unknown"
+    CONNECTED = "connected"
+    FAILED = "failed"
+
+    @property
+    def label(self) -> str:
+        labels = {
+            ConnectionState.UNKNOWN: "未確認",
+            ConnectionState.CONNECTED: "接続成功",
+            ConnectionState.FAILED: "通信失敗",
+        }
+        return labels[self]
+
+
 @dataclass(frozen=True, slots=True)
 class SchedulerStatus:
     paused: bool
     pending: int
     error: str | None
+    connection: ConnectionState = ConnectionState.UNKNOWN
 
 
 @dataclass(slots=True)
@@ -218,6 +234,7 @@ class TranslationScheduler:
         self._wake = asyncio.Event()
         self._closed = False
         self._paused = False
+        self._connection = ConnectionState.UNKNOWN
         self._error: str | None = None
         self._cancelled: set[str] = set()
         self._memo: dict[str, str] = {}
@@ -253,10 +270,16 @@ class TranslationScheduler:
         try:
             await self._client.list_models()
         except TranslationFailure as exc:
+            if exc.server_unavailable:
+                self._connection = ConnectionState.FAILED
+            else:
+                # The server answered, so the transport itself is reachable.
+                self._connection = ConnectionState.CONNECTED
             self._error = exc.kind.label
             self._emit_status()
             return False
         self._paused = False
+        self._connection = ConnectionState.CONNECTED
         self._error = None
         self._wake.set()
         self._emit_status()
@@ -362,10 +385,15 @@ class TranslationScheduler:
         except TranslationFailure as exc:
             if exc.server_unavailable:
                 self._paused = True
+                self._connection = ConnectionState.FAILED
                 self._error = exc.kind.label
-                self._emit_status()
+            else:
+                # The server answered, so the transport itself is reachable.
+                self._connection = ConnectionState.CONNECTED
+            self._emit_status()
             return False, None, exc.kind.value
 
+        self._connection = ConnectionState.CONNECTED
         if not validate_segment_translation(translated, segment.markers):
             return False, None, ErrorKind.INVALID.value
 
@@ -376,4 +404,11 @@ class TranslationScheduler:
 
     def _emit_status(self) -> None:
         pending = self._active + len(self._deferred)
-        self._on_status(SchedulerStatus(paused=self._paused, pending=pending, error=self._error))
+        self._on_status(
+            SchedulerStatus(
+                paused=self._paused,
+                pending=pending,
+                error=self._error,
+                connection=self._connection,
+            )
+        )
