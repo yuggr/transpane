@@ -40,6 +40,7 @@ from .session import (
     SessionError,
     SessionIndexMismatch,
     SessionReader,
+    SessionReadError,
     discover_all_sessions,
     reader_for_session,
     sessions_for_cwd,
@@ -252,6 +253,10 @@ class Monitor:
             if generation == self._generation:
                 await self._rebuild(generation, note="索引不一致のため再構築しました")
             return
+        except SessionReadError as exc:
+            if generation == self._generation:
+                self._stop(self._read_error_note(exc), reset=True)
+            return
         if generation != self._generation:
             return
 
@@ -276,6 +281,19 @@ class Monitor:
         except SessionIndexMismatch:
             if generation == self._generation:
                 await self._rebuild(generation, note="索引不一致のため再構築しました")
+            return
+        except SessionReadError as exc:
+            if generation != self._generation:
+                return
+            if exc.reason in ("missing", "read"):
+                self._note = (
+                    "ログ取得停止（ファイルが見つかりません）"
+                    if exc.reason == "missing"
+                    else "ログを読み取れません"
+                )
+                self._emit_status()
+                return
+            self._stop(self._read_error_note(exc))
             return
         if generation != self._generation or self._stopped:
             return
@@ -354,7 +372,6 @@ class Monitor:
                 return
             if result.denied:
                 self._generation += 1
-                self._scheduler.cancel_generation(generation)
                 self._stop("監視停止（許可範囲外のパスです）")
                 return
             if result.missing:
@@ -366,7 +383,6 @@ class Monitor:
                 return
             if result.thread_changed is not None:
                 self._generation += 1
-                self._scheduler.cancel_generation(generation)
                 self._stop("ログのセッションIDが変更されました（自動切替しません）")
                 return
             if result.messages:
@@ -387,6 +403,7 @@ class Monitor:
         old_generation = self._generation
         self._generation += 1
         generation = self._generation
+        self._stopped = True
         self._scheduler.cancel_generation(old_generation)
         self._clear_pending()
         try:
@@ -425,6 +442,10 @@ class Monitor:
                 "索引とログの内容が一致しません（監視停止）",
                 reset=True,
             )
+            return
+        except SessionReadError as exc:
+            if generation == self._generation:
+                self._stop(self._read_error_note(exc), reset=True)
             return
         if generation != self._generation:
             return
@@ -503,8 +524,19 @@ class Monitor:
         for view in reversed(views):
             self._schedule(view, priority=1)
 
+    @staticmethod
+    def _read_error_note(exc: SessionReadError) -> str:
+        if exc.reason == "denied":
+            return "監視停止（許可範囲外のパスです）"
+        if exc.reason == "halted":
+            return "ログのセッションIDが変更されました（自動切替しません）"
+        if exc.reason == "missing":
+            return "ログを読み取れません（ファイルが見つかりません）"
+        return "ログを読み取れません"
+
     def _stop(self, note: str, *, reset: bool = False) -> None:
         self._stopped = True
+        self._scheduler.cancel_generation(self._generation)
         self._clear_pending()
         if reset:
             self._views.clear()

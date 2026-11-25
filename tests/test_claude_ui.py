@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import threading
 from pathlib import Path
 
 import httpx
@@ -23,7 +25,12 @@ from support import (
     write_session,
 )
 from transpane.models import AgentProvider, TranslationState
-from transpane.session import discover_all_sessions, select_session
+from transpane.session import (
+    SessionReader,
+    SessionReadError,
+    discover_all_sessions,
+    select_session,
+)
 from transpane.ui import Monitor, TranspaneApp
 
 CLAUDE_ID = "11111111-1111-4111-8111-111111111111"
@@ -224,6 +231,7 @@ async def test_app_picker_shows_provider_and_applies_source_filter(tmp_path):
         from transpane.ui import SessionScreen
 
         await wait_until(lambda: isinstance(app.screen, SessionScreen))
+        await pilot.pause()
         assert [session.provider for session in app._sessions] == [AgentProvider.CLAUDE]
         rendered = screen_text(app)
         assert "Claude Code" in rendered
@@ -580,6 +588,7 @@ async def test_monitor_stop_blocks_retry_and_history(tmp_path, stop_mode):
         note = "許可範囲外"
     await wait_until(lambda: monitor._note is not None and note in monitor._note)
     assert monitor._stopped
+    assert monitor._scheduler._cancelled_through >= monitor._generation
     unexpected.clear()
     before = len(requests)
     views_before = len(monitor.views)
@@ -716,6 +725,172 @@ async def test_monitor_index_mismatch_rebuilds_on_history(tmp_path):
     assert len(monitor.views) == 60
     assert monitor.views[0].message.original == "Changed 00."
     assert all(view.message.original != "Message 00." for view in monitor.views)
+    await monitor.close()
+
+
+async def test_rebuild_blocks_retry_until_success(tmp_path):
+    config = make_config(tmp_path)
+    records = [
+        claude_agent(
+            CLAUDE_ID,
+            "Fail me." if index == 59 else f"Message {index}.",
+            uuid=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(60)
+    ]
+    path = write_claude_session(config.claude_projects_root, CLAUDE_ID, records)
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(request.method)
+        if request.method == "GET":
+            return translating_handler(request)
+        text = json.loads(request.content)["messages"][1]["content"]
+        if text == "Fail me.":
+            return httpx.Response(400, json={})
+        return ok_response("訳:" + text)
+
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(handler))
+    await monitor.start(session)
+    await wait_until(
+        lambda: len(monitor.views) == 50 and all(not view.pending for view in monitor.views)
+    )
+
+    original_scan = monitor._reader.scan_all
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_scan():
+        entered.set()
+        release.wait(timeout=5)
+        return original_scan()
+
+    monitor._reader.scan_all = blocking_scan
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(path.read_bytes())
+    try:
+        os.replace(replacement, path)
+        await wait_until(entered.is_set)
+        assert monitor._stopped
+        before = len(requests)
+        queue_before = (
+            len(monitor._scheduler._queue),
+            len(monitor._scheduler._deferred),
+            monitor._scheduler._active,
+        )
+
+        await monitor.retry()
+        assert (
+            len(monitor._scheduler._queue),
+            len(monitor._scheduler._deferred),
+            monitor._scheduler._active,
+        ) == queue_before
+        assert len(requests) == before
+    finally:
+        release.set()
+    await wait_until(
+        lambda: not monitor._stopped and monitor._note is not None and "再構築" in monitor._note
+    )
+    await monitor.close()
+
+
+async def test_history_read_failure_does_not_advance_visible_and_recovers(tmp_path):
+    config = make_config(tmp_path)
+    records = [
+        claude_agent(
+            CLAUDE_ID,
+            f"Message {index:02d}.",
+            uuid=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(60)
+    ]
+    path = write_claude_session(config.claude_projects_root, CLAUDE_ID, records)
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    await wait_until(lambda: len(monitor.views) == 50)
+    if monitor._poll_task is not None:
+        monitor._poll_task.cancel()
+        monitor._poll_task = None
+
+    original = path.read_bytes()
+    path.unlink()
+    await monitor.add_history()
+    assert len(monitor.views) == 50
+    assert monitor._visible == 50
+    assert monitor._note is not None and "ファイルが見つかりません" in monitor._note
+    assert not monitor._stopped
+
+    path.write_bytes(original)
+    await monitor.add_history()
+    assert len(monitor.views) == 60
+    assert monitor._visible == 60
+    assert monitor.views[0].message.message_id == "00000000-0000-4000-8000-000000000000"
+    await monitor.close()
+
+
+async def test_switch_read_error_is_handled(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    write_claude_session(config.claude_projects_root, CLAUDE_ID, [claude_user(CLAUDE_ID, "hello")])
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+
+    def fail_read(self, entries):
+        raise SessionReadError("read")
+
+    monkeypatch.setattr(SessionReader, "read_messages", fail_read)
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    assert monitor._stopped
+    assert monitor._note is not None and "ログを読み取れません" in monitor._note
+    await monitor.close()
+
+
+async def test_rebuild_read_error_is_handled(tmp_path):
+    config = make_config(tmp_path)
+    records = [
+        claude_agent(
+            CLAUDE_ID,
+            f"Message {index}.",
+            uuid=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(60)
+    ]
+    path = write_claude_session(config.claude_projects_root, CLAUDE_ID, records)
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    await wait_until(lambda: len(monitor.views) == 50)
+
+    def fail_read(entries):
+        raise SessionReadError("read")
+
+    monitor._reader.read_messages = fail_read
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(path.read_bytes())
+    os.replace(replacement, path)
+    await wait_until(lambda: monitor._stopped)
+    assert monitor._note is not None and "ログを読み取れません" in monitor._note
     await monitor.close()
 
 

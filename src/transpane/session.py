@@ -27,8 +27,19 @@ class SessionError(Exception):
     """Session selection or access failed."""
 
 
-class SessionIndexMismatch(SessionError):
+class SessionReadError(SessionError):
+    """The transcript could not be read safely."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class SessionIndexMismatch(SessionReadError):
     """The on-disk record no longer matches the scan index."""
+
+    def __init__(self) -> None:
+        super().__init__("index_mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,27 +468,41 @@ class SessionReader:
         )
 
     def read_messages(self, entries: list[IndexEntry]) -> list[Message]:
-        if self._unsupported is not None or self._halted or not self._source_allowed():
+        if not entries:
             return []
+        if self._unsupported is not None:
+            raise SessionReadError("unsupported")
+        if self._halted:
+            raise SessionReadError("halted")
+        if self.path.is_symlink():
+            raise SessionReadError("denied")
+        if not self.path.exists():
+            raise SessionReadError("missing")
+        if not self._source_allowed():
+            raise SessionReadError("denied")
+
         messages: list[Message] = []
-        with self.path.open("rb") as handle:
-            for entry in entries:
-                handle.seek(entry.sequence)
-                raw = handle.read(entry.end - entry.sequence)
-                try:
-                    record = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    raise SessionIndexMismatch("索引とログの内容が一致しません") from exc
-                if not isinstance(record, dict):
-                    raise SessionIndexMismatch("索引とログの内容が一致しません")
-                message = self._extract_record(record, entry.sequence)
-                if (
-                    message is None
-                    or message.message_id != entry.message_id
-                    or message.revision != entry.revision
-                ):
-                    raise SessionIndexMismatch("索引とログの内容が一致しません")
-                messages.append(message)
+        try:
+            with self.path.open("rb") as handle:
+                for entry in entries:
+                    handle.seek(entry.sequence)
+                    raw = handle.read(entry.end - entry.sequence)
+                    try:
+                        record = json.loads(raw)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        raise SessionIndexMismatch() from exc
+                    if not isinstance(record, dict):
+                        raise SessionIndexMismatch()
+                    message = self._extract_record(record, entry.sequence)
+                    if (
+                        message is None
+                        or message.message_id != entry.message_id
+                        or message.revision != entry.revision
+                    ):
+                        raise SessionIndexMismatch()
+                    messages.append(message)
+        except OSError as exc:
+            raise SessionReadError("read") from exc
         return messages
 
     @property

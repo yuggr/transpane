@@ -13,6 +13,7 @@ from transpane.session import (
     SessionError,
     SessionIndexMismatch,
     SessionReader,
+    SessionReadError,
     discover_all_sessions,
     discover_sessions,
     normalize_cwd,
@@ -486,7 +487,9 @@ def test_claude_reader_reports_session_id_mismatch(tmp_path):
     reader = SessionReader(path, CLAUDE_SESSION, provider=AgentProvider.CLAUDE)
     result = reader.scan_all()
     assert result.thread_changed == "other"
-    assert reader.read_messages(result.entries) == []
+    with pytest.raises(SessionReadError) as excinfo:
+        reader.read_messages(result.entries)
+    assert excinfo.value.reason == "halted"
 
     path2 = write_claude(root, "demo", CLAUDE_SESSION, [claude_record("ok")])
     reader2 = SessionReader(path2, CLAUDE_SESSION, provider=AgentProvider.CLAUDE)
@@ -577,6 +580,41 @@ def test_claude_read_messages_rejects_same_size_rewrite(tmp_path):
     assert reader.poll().messages == []
     with pytest.raises(SessionIndexMismatch):
         reader.read_messages(result.entries)
+
+
+def test_read_messages_distinguishes_missing_denied_and_read_failure(tmp_path, monkeypatch):
+    root = tmp_path / "claude" / "projects"
+    path = write_claude(root, "demo", CLAUDE_SESSION, [claude_record("one")])
+    reader = SessionReader(path, CLAUDE_SESSION, provider=AgentProvider.CLAUDE)
+    result = reader.scan_all()
+    original = path.read_bytes()
+
+    path.unlink()
+    with pytest.raises(SessionReadError) as excinfo:
+        reader.read_messages(result.entries)
+    assert excinfo.value.reason == "missing"
+
+    path.write_bytes(original)
+    assert [message.original for message in reader.read_messages(result.entries)] == ["one"]
+
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(original)
+    path.unlink()
+    path.symlink_to(outside)
+    with pytest.raises(SessionReadError) as excinfo:
+        reader.read_messages(result.entries)
+    assert excinfo.value.reason == "denied"
+
+    path.unlink()
+    path.write_bytes(original)
+
+    def fail_open(self, *args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(SessionReadError) as excinfo:
+        reader.read_messages(result.entries)
+    assert excinfo.value.reason == "read"
 
 
 def test_reader_missing_file_with_allowed_root_is_missing_not_denied(tmp_path):
