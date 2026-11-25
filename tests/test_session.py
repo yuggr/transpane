@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from transpane import session as session_module
+from transpane.claude import claude_transcript_counts, discover_claude_sessions
 from transpane.models import AgentProvider
 from transpane.session import (
     SessionError,
+    SessionIndexMismatch,
     SessionReader,
-    claude_transcript_counts,
     discover_all_sessions,
-    discover_claude_sessions,
     discover_sessions,
     normalize_cwd,
     read_session_meta,
@@ -575,7 +575,8 @@ def test_claude_read_messages_rejects_same_size_rewrite(tmp_path):
     path.write_bytes(dump([claude_record("two", uuid="u-1", kind="assistant")]))
     assert path.stat().st_size == before_size
     assert reader.poll().messages == []
-    assert reader.read_messages(result.entries) == []
+    with pytest.raises(SessionIndexMismatch):
+        reader.read_messages(result.entries)
 
 
 def test_reader_missing_file_with_allowed_root_is_missing_not_denied(tmp_path):

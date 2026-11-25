@@ -398,6 +398,9 @@ class TranslationScheduler:
             self._memo[key] = cached
             return True, cached, None
 
+        if task.ref.generation <= self._cancelled_through:
+            return False, None, ErrorKind.CANCELLED.value
+
         try:
             translated = await self._client.translate(segment.text)
         except TranslationFailure as exc:

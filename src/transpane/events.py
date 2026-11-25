@@ -195,6 +195,54 @@ _CLAUDE_IGNORED_USER_BLOCKS = frozenset({"image"})
 _CLAUDE_SYNTHETIC_MODEL = "<synthetic>"
 
 
+def _contains_internal_tag(texts: list[str]) -> bool:
+    combined = "".join(texts)
+    return any(tag in combined for tag in _CLAUDE_INTERNAL_TAGS)
+
+
+def _excluded_by_flag(record: dict[str, Any]) -> bool:
+    for name in _CLAUDE_FLAGS:
+        if name not in record:
+            continue
+        value = record[name]
+        if not isinstance(value, bool) or value:
+            return True
+    return False
+
+
+def _content_text(
+    content: Any,
+    ignored_blocks: frozenset[str],
+    *,
+    allow_string: bool,
+) -> str | None:
+    if isinstance(content, str):
+        if not allow_string:
+            return None
+        texts = [content]
+    elif isinstance(content, list):
+        texts = []
+        for block in content:
+            if not isinstance(block, dict):
+                return None
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text")
+                if not isinstance(text, str):
+                    return None
+                if text.strip():
+                    texts.append(text)
+            elif block_type in ignored_blocks:
+                continue
+            else:
+                return None
+    else:
+        return None
+    if _contains_internal_tag(texts):
+        return None
+    return "\n\n".join(texts)
+
+
 class ClaudeExtractor:
     """Allowlisted conversion of Claude Code transcript records."""
 
@@ -206,7 +254,7 @@ class ClaudeExtractor:
         if record_type not in ("user", "assistant"):
             return ExtractResult(reason="not_allowed")
         # Internal/excluded records must not be mistaken for a session change.
-        if self._excluded_by_flag(record):
+        if _excluded_by_flag(record):
             return ExtractResult(reason="excluded")
 
         session_id = record.get("sessionId")
@@ -231,16 +279,14 @@ class ClaudeExtractor:
         if record_type == "user":
             if record.get("toolUseResult") is not None:
                 return ExtractResult(reason="excluded")
-            text = self._user_text(content)
+            text = _content_text(content, _CLAUDE_IGNORED_USER_BLOCKS, allow_string=True)
         else:
-            text = self._assistant_text(content)
+            text = _content_text(content, _CLAUDE_HIDDEN_ASSISTANT_BLOCKS, allow_string=False)
 
         if text is None:
             return ExtractResult(reason="excluded")
         if not text.strip():
             return ExtractResult(reason="empty")
-        if any(tag in text for tag in _CLAUDE_INTERNAL_TAGS):
-            return ExtractResult(reason="excluded")
 
         return ExtractResult(
             Message(
@@ -253,54 +299,3 @@ class ClaudeExtractor:
                 original=text,
             )
         )
-
-    def _excluded_by_flag(self, record: dict[str, Any]) -> bool:
-        for name in _CLAUDE_FLAGS:
-            if name not in record:
-                continue
-            value = record[name]
-            if not isinstance(value, bool) or value:
-                return True
-        return False
-
-    def _user_text(self, content: Any) -> str | None:
-        if isinstance(content, str):
-            return content
-        if not isinstance(content, list):
-            return None
-        texts: list[str] = []
-        for block in content:
-            if not isinstance(block, dict):
-                return None
-            block_type = block.get("type")
-            if block_type == "text":
-                text = block.get("text")
-                if not isinstance(text, str):
-                    return None
-                if text.strip():
-                    texts.append(text)
-            elif block_type in _CLAUDE_IGNORED_USER_BLOCKS:
-                continue
-            else:
-                return None
-        return "\n\n".join(texts)
-
-    def _assistant_text(self, content: Any) -> str | None:
-        if not isinstance(content, list):
-            return None
-        texts: list[str] = []
-        for block in content:
-            if not isinstance(block, dict):
-                return None
-            block_type = block.get("type")
-            if block_type == "text":
-                text = block.get("text")
-                if not isinstance(text, str):
-                    return None
-                if text.strip():
-                    texts.append(text)
-            elif block_type in _CLAUDE_HIDDEN_ASSISTANT_BLOCKS:
-                continue
-            else:
-                return None
-        return "\n\n".join(texts)

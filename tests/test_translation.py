@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 
 import httpx
 import pytest
@@ -465,6 +466,38 @@ def test_scheduler_cancels_old_generation_and_does_not_revive_it(tmp_path):
         await stop(scheduler, task)
 
     run(scenario())
+
+
+def test_scheduler_cancel_during_cache_lookup_does_not_post(tmp_path):
+    outcomes: list = []
+    calls: list = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(request):
+        calls.append(1)
+        return ok_response("訳 Done.")
+
+    def blocking_get(key):
+        entered.set()
+        release.wait(timeout=3)
+        return None
+
+    async def scenario():
+        scheduler, cache = make_scheduler(handler, tmp_path, outcomes, [])
+        cache.get = blocking_get
+        task = asyncio.create_task(scheduler.run())
+        scheduler.submit(ref("m1", generation=1), [segment()])
+        assert await asyncio.to_thread(entered.wait, 3)
+        scheduler.cancel_generation(1)
+        release.set()
+        await wait_until(lambda: len(outcomes) == 1)
+        await stop(scheduler, task)
+
+    run(scenario())
+    assert calls == []
+    assert outcomes[0][2] is None
+    assert outcomes[0][3] == ErrorKind.CANCELLED.value
 
 
 def test_scheduler_stops_followup_segments_after_cancellation(tmp_path):

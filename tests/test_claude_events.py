@@ -148,6 +148,20 @@ def test_exclusion_flags_take_priority_over_session_mismatch():
     assert mismatch.reason == "thread_mismatch"
 
 
+def test_internal_wrapper_split_across_text_blocks_is_excluded():
+    result = extract(
+        record(
+            "user",
+            [
+                {"type": "text", "text": "<system-"},
+                {"type": "text", "text": "reminder> hidden"},
+            ],
+        )
+    )
+    assert result.message is None
+    assert result.reason == "excluded"
+
+
 def test_identity_and_role_contract():
     assert extract(record("user", "x", session="other")).reason == "thread_mismatch"
     assert extract(record("user", "x", uuid="")).reason == "missing_id"

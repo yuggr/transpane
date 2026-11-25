@@ -10,11 +10,11 @@ from datetime import datetime
 from pathlib import Path
 
 from .cache import TranslationCache
+from .claude import claude_transcript_counts
 from .config import Config, ConfigError, load_config
 from .models import AgentProvider
 from .session import (
     SessionError,
-    claude_transcript_counts,
     discover_all_sessions,
     reader_for_session,
     select_session,

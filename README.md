@@ -285,8 +285,12 @@ mv ~/.cache/transpane/translations.sqlite3 \
   8 MiB を超える行は読み飛ばして診断し、後続の有効行は処理します。
 - ファイル消失時は表示を保持して「ログ取得停止」を示します。inode 変更・縮小・置換を
   検出すると索引を再構築します。セッション ID が変わっても自動では切り替えません。
+- 履歴読戻し時に索引とログの message ID / revision が一致しなければ、本文を表示・送信
+  せずに既存の再構築経路へ切り替えます。再構築後も一致しない場合は監視を停止します。
 - 初期表示は末尾 50 件、`h` で 50 件ずつ過去を追加します。切替・再構築時は旧世代の
   未送信翻訳を取り消し、前のセッションの翻訳結果を新しい画面へ適用しません。
+- 監視停止（セッション ID 不一致、許可外パス、再構築失敗）後は `r` / `h` による翻訳
+  再開を行いません。`s` でセッションを再選択するまで新規翻訳を予約しません。
 - Claude Code の transcript は公式に内部形式とされ、リリースで変更され得ます。
   本アプリは実測した許可形式だけを読み、未知形式は無視または「対象イベント未検出」と
   診断します。推測による抽出は行いません。
@@ -396,9 +400,10 @@ uv run ruff format --check src tests
 ```text
 src/transpane/
 ├── cli.py           # 引数・診断CLI
+├── claude.py        # Claude Code の発見・メタデータ解釈
 ├── config.py        # 設定解決・URL制約・内部定数
 ├── models.py        # dataclass / enum
-├── session.py       # Codex / Claude Code の発見・増分読み取り
+├── session.py       # Codex 発見・共通 SessionReader・セッション選択
 ├── events.py        # Codex / Claude Code の JSONL 許可リスト変換
 ├── markdown.py      # 構造保護・分割・復元検証
 ├── cache.py         # SQLite キャッシュ
