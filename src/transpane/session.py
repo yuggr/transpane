@@ -96,6 +96,25 @@ def _within_root(path: Path, root_real: Path) -> bool:
     return True
 
 
+def _kept_subdirectories(dirpath: str, dirnames: list[str]) -> list[str]:
+    return sorted(
+        name
+        for name in dirnames
+        if name != "archived_sessions" and not os.path.islink(os.path.join(dirpath, name))
+    )
+
+
+def _rollout_path(dirpath: str, name: str, root_real: Path) -> Path | None:
+    if not _is_rollout_file_name(name):
+        return None
+    path = Path(dirpath) / name
+    if path.is_symlink():
+        return None
+    if not _within_root(path, root_real):
+        return None
+    return path
+
+
 def iter_rollout_files(sessions_root: Path) -> Iterator[Path]:
     if not sessions_root.is_dir():
         return
@@ -104,20 +123,11 @@ def iter_rollout_files(sessions_root: Path) -> Iterator[Path]:
     except OSError:
         return
     for dirpath, dirnames, filenames in os.walk(sessions_root, followlinks=False):
-        dirnames[:] = sorted(
-            name
-            for name in dirnames
-            if name != "archived_sessions" and not os.path.islink(os.path.join(dirpath, name))
-        )
+        dirnames[:] = _kept_subdirectories(dirpath, dirnames)
         for name in sorted(filenames):
-            if not _is_rollout_file_name(name):
-                continue
-            path = Path(dirpath) / name
-            if path.is_symlink():
-                continue
-            if not _within_root(path, root_real):
-                continue
-            yield path
+            path = _rollout_path(dirpath, name, root_real)
+            if path is not None:
+                yield path
 
 
 def _discard_rest_of_oversized_line(handle: BinaryIO, consumed: int) -> int | None:
@@ -143,27 +153,34 @@ def _session_meta_payload(record: object) -> dict[str, Any] | None:
     return None
 
 
+def _read_meta_step(handle: BinaryIO, consumed: int) -> tuple[dict[str, Any] | None, int] | None:
+    """Read or drain one line. Return (payload, consumed), or None at EOF."""
+    line = handle.readline(256 * 1024)
+    if not line:
+        return None
+    consumed += len(line)
+    if not line.endswith(b"\n") and len(line) >= 256 * 1024:
+        discarded = _discard_rest_of_oversized_line(handle, consumed)
+        if discarded is None:
+            return None
+        return None, discarded
+    try:
+        record = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, consumed
+    return _session_meta_payload(record), consumed
+
+
 def read_session_meta(path: Path) -> dict[str, Any] | None:
     """Return the first valid session_meta payload, reading only the file head."""
     consumed = 0
     try:
         with path.open("rb") as handle:
             while consumed < META_READ_LIMIT:
-                line = handle.readline(256 * 1024)
-                if not line:
+                step = _read_meta_step(handle, consumed)
+                if step is None:
                     return None
-                consumed += len(line)
-                if not line.endswith(b"\n") and len(line) >= 256 * 1024:
-                    discarded = _discard_rest_of_oversized_line(handle, consumed)
-                    if discarded is None:
-                        return None
-                    consumed = discarded
-                    continue
-                try:
-                    record = json.loads(line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                payload = _session_meta_payload(record)
+                payload, consumed = step
                 if payload is not None:
                     return payload
     except OSError:
@@ -175,45 +192,55 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def discover_sessions(sessions_root: Path) -> list[SessionInfo]:
-    found: list[SessionInfo] = []
-    seen_parents: set[str] = set()
+def _session_info_for_path(path: Path) -> tuple[SessionInfo, str | None] | None:
+    payload = read_session_meta(path)
+    if payload is None:
+        return None
+    thread_id = payload.get("id")
+    if not isinstance(thread_id, str) or not thread_id:
+        return None
+    try:
+        updated_at = path.stat().st_mtime
+    except OSError:
+        return None
+    parent = _optional_str(payload.get("parent_thread_id"))
+    info = SessionInfo(
+        thread_id=thread_id,
+        path=str(path),
+        cwd=_optional_str(payload.get("cwd")),
+        updated_at=updated_at,
+        history_mode=_optional_str(payload.get("history_mode")),
+        cli_version=_optional_str(payload.get("cli_version")),
+        parent_thread_id=parent,
+        source=_optional_str(payload.get("source")),
+        provider=AgentProvider.CODEX,
+    )
+    return info, parent
 
+
+def _discover_raw_sessions(sessions_root: Path) -> list[tuple[SessionInfo, str | None]]:
     raw: list[tuple[SessionInfo, str | None]] = []
     for path in iter_rollout_files(sessions_root):
-        payload = read_session_meta(path)
-        if payload is None:
-            continue
-        thread_id = payload.get("id")
-        if not isinstance(thread_id, str) or not thread_id:
-            continue
-        try:
-            updated_at = path.stat().st_mtime
-        except OSError:
-            continue
-        parent = _optional_str(payload.get("parent_thread_id"))
-        info = SessionInfo(
-            thread_id=thread_id,
-            path=str(path),
-            cwd=_optional_str(payload.get("cwd")),
-            updated_at=updated_at,
-            history_mode=_optional_str(payload.get("history_mode")),
-            cli_version=_optional_str(payload.get("cli_version")),
-            parent_thread_id=parent,
-            source=_optional_str(payload.get("source")),
-            provider=AgentProvider.CODEX,
-        )
-        raw.append((info, parent))
+        item = _session_info_for_path(path)
+        if item is not None:
+            raw.append(item)
+    return raw
 
+
+def _drop_known_children(raw: list[tuple[SessionInfo, str | None]]) -> list[SessionInfo]:
     seen_parents = {info.thread_id for info, _ in raw}
-
+    found: list[SessionInfo] = []
     for info, parent in raw:
         # Known child sessions are excluded. A child whose parent is not present
         # is kept and labelled by the UI.
         if parent is not None and parent in seen_parents:
             continue
         found.append(info)
+    return found
 
+
+def discover_sessions(sessions_root: Path) -> list[SessionInfo]:
+    found = _drop_known_children(_discover_raw_sessions(sessions_root))
     found.sort(key=lambda item: (-item.updated_at, item.thread_id))
     return found
 
@@ -416,17 +443,22 @@ class SessionReader:
             lines, oversized = self._splitter.feed(chunk)
             self._scan_stats.oversized_lines += oversized
             for offset, raw in lines:
-                message, changed = self._process_line(offset, raw, self._scan_stats)
+                changed = self._scan_line(offset, raw, entries, positions)
                 if changed is not None and thread_changed is None:
                     thread_changed = changed
-                if message is None:
-                    continue
-                entry = self._make_entry(message, len(raw))
-                if self.provider is AgentProvider.CLAUDE:
-                    self._append_scan_entry(entries, positions, entry)
-                else:
-                    entries.append(entry)
         return entries, thread_changed
+
+    def _scan_line(
+        self, offset: int, raw: bytes, entries: list[IndexEntry], positions: dict[str, int]
+    ) -> str | None:
+        message, changed = self._process_line(offset, raw, self._scan_stats)
+        if message is not None:
+            entry = self._make_entry(message, len(raw))
+            if self.provider is AgentProvider.CLAUDE:
+                self._append_scan_entry(entries, positions, entry)
+            else:
+                entries.append(entry)
+        return changed
 
     @staticmethod
     def _append_scan_entry(
