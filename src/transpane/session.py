@@ -7,7 +7,7 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from .claude import CLAUDE_HISTORY_MODE, discover_claude_sessions
 from .config import INITIAL_SCAN_CHUNK_BYTES, MAX_LINE_BYTES, MAX_POLL_BYTES
@@ -84,6 +84,18 @@ class PollResult:
     unsupported_mode: str | None = None
 
 
+def _is_rollout_file_name(name: str) -> bool:
+    return name.startswith("rollout-") and name.endswith(".jsonl")
+
+
+def _within_root(path: Path, root_real: Path) -> bool:
+    try:
+        path.resolve().relative_to(root_real)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def iter_rollout_files(sessions_root: Path) -> Iterator[Path]:
     if not sessions_root.is_dir():
         return
@@ -98,16 +110,37 @@ def iter_rollout_files(sessions_root: Path) -> Iterator[Path]:
             if name != "archived_sessions" and not os.path.islink(os.path.join(dirpath, name))
         )
         for name in sorted(filenames):
-            if not (name.startswith("rollout-") and name.endswith(".jsonl")):
+            if not _is_rollout_file_name(name):
                 continue
             path = Path(dirpath) / name
             if path.is_symlink():
                 continue
-            try:
-                path.resolve().relative_to(root_real)
-            except (OSError, ValueError):
+            if not _within_root(path, root_real):
                 continue
             yield path
+
+
+def _discard_rest_of_oversized_line(handle: BinaryIO, consumed: int) -> int | None:
+    while consumed < META_READ_LIMIT:
+        rest = handle.readline(256 * 1024)
+        if not rest:
+            return None
+        consumed += len(rest)
+        if rest.endswith(b"\n"):
+            break
+    return consumed
+
+
+def _session_meta_payload(record: object) -> dict[str, Any] | None:
+    if not isinstance(record, dict) or record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    thread_id = payload.get("id")
+    if isinstance(thread_id, str) and thread_id:
+        return payload
+    return None
 
 
 def read_session_meta(path: Path) -> dict[str, Any] | None:
@@ -121,25 +154,17 @@ def read_session_meta(path: Path) -> dict[str, Any] | None:
                     return None
                 consumed += len(line)
                 if not line.endswith(b"\n") and len(line) >= 256 * 1024:
-                    while consumed < META_READ_LIMIT:
-                        rest = handle.readline(256 * 1024)
-                        if not rest:
-                            return None
-                        consumed += len(rest)
-                        if rest.endswith(b"\n"):
-                            break
+                    discarded = _discard_rest_of_oversized_line(handle, consumed)
+                    if discarded is None:
+                        return None
+                    consumed = discarded
                     continue
                 try:
                     record = json.loads(line)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-                if not isinstance(record, dict) or record.get("type") != "session_meta":
-                    continue
-                payload = record.get("payload")
-                if not isinstance(payload, dict):
-                    continue
-                thread_id = payload.get("id")
-                if isinstance(thread_id, str) and thread_id:
+                payload = _session_meta_payload(record)
+                if payload is not None:
                     return payload
     except OSError:
         return None
@@ -364,49 +389,60 @@ class SessionReader:
         self._unsupported = None
         self._halted = False
         self._scan_stats = ScanStats()
-        entries: list[IndexEntry] = []
-        entry_positions: dict[str, int] = {}
-        thread_changed: str | None = None
 
         with self.path.open("rb") as handle:
-            while True:
-                chunk = handle.read(INITIAL_SCAN_CHUNK_BYTES)
-                if not chunk:
-                    break
-                lines, oversized = self._splitter.feed(chunk)
-                self._scan_stats.oversized_lines += oversized
-                for offset, raw in lines:
-                    message, changed = self._process_line(offset, raw, self._scan_stats)
-                    if changed is not None and thread_changed is None:
-                        thread_changed = changed
-                    if message is not None:
-                        entry = self._make_entry(message, len(raw))
-                        if self.provider is AgentProvider.CLAUDE:
-                            position = entry_positions.get(entry.message_id)
-                            if position is None:
-                                entry_positions[entry.message_id] = len(entries)
-                                entries.append(entry)
-                            elif entries[position].revision != entry.revision:
-                                entries[position] = entry
-                        else:
-                            entries.append(entry)
+            entries, thread_changed = self._scan_file(handle)
 
         stat = self.path.stat()
         self._device = stat.st_dev
         self._inode = stat.st_ino
-        history_mode = (
-            CLAUDE_HISTORY_MODE
-            if self.provider is AgentProvider.CLAUDE
-            else (None if self._unsupported or self._mode is None else self._mode.value)
-        )
         return ScanResult(
             thread_id=self.thread_id,
-            history_mode=history_mode,
+            history_mode=self._history_mode_label(),
             unsupported_mode=self._unsupported,
             thread_changed=thread_changed,
             entries=entries,
             stats=self._scan_stats,
         )
+
+    def _scan_file(self, handle: BinaryIO) -> tuple[list[IndexEntry], str | None]:
+        entries: list[IndexEntry] = []
+        positions: dict[str, int] = {}
+        thread_changed: str | None = None
+        while True:
+            chunk = handle.read(INITIAL_SCAN_CHUNK_BYTES)
+            if not chunk:
+                break
+            lines, oversized = self._splitter.feed(chunk)
+            self._scan_stats.oversized_lines += oversized
+            for offset, raw in lines:
+                message, changed = self._process_line(offset, raw, self._scan_stats)
+                if changed is not None and thread_changed is None:
+                    thread_changed = changed
+                if message is None:
+                    continue
+                entry = self._make_entry(message, len(raw))
+                if self.provider is AgentProvider.CLAUDE:
+                    self._append_scan_entry(entries, positions, entry)
+                else:
+                    entries.append(entry)
+        return entries, thread_changed
+
+    @staticmethod
+    def _append_scan_entry(
+        entries: list[IndexEntry], positions: dict[str, int], entry: IndexEntry
+    ) -> None:
+        position = positions.get(entry.message_id)
+        if position is None:
+            positions[entry.message_id] = len(entries)
+            entries.append(entry)
+        elif entries[position].revision != entry.revision:
+            entries[position] = entry
+
+    def _history_mode_label(self) -> str | None:
+        if self.provider is AgentProvider.CLAUDE:
+            return CLAUDE_HISTORY_MODE
+        return None if self._unsupported or self._mode is None else self._mode.value
 
     @staticmethod
     def _make_entry(message: Message, raw_length: int) -> IndexEntry:
@@ -419,24 +455,31 @@ class SessionReader:
             revision=message.revision,
         )
 
-    def poll(self) -> PollResult:
+    def _poll_precheck(self) -> tuple[PollResult | None, os.stat_result | None]:
         if self.path.is_symlink():
-            return PollResult(denied=True)
+            return PollResult(denied=True), None
         if not self.path.exists():
-            return PollResult(missing=True)
+            return PollResult(missing=True), None
         if not self._source_allowed():
-            return PollResult(denied=True)
+            return PollResult(denied=True), None
         try:
             stat = self.path.stat()
         except OSError:
-            return PollResult(missing=True)
+            return PollResult(missing=True), None
 
         if self._device is not None and (stat.st_dev != self._device or stat.st_ino != self._inode):
-            return PollResult(rebuilt=True)
-        consumed = self._splitter.consumed
-        if stat.st_size < consumed:
-            return PollResult(rebuilt=True)
+            return PollResult(rebuilt=True), None
+        if stat.st_size < self._splitter.consumed:
+            return PollResult(rebuilt=True), None
+        return None, stat
 
+    def poll(self) -> PollResult:
+        precheck, stat = self._poll_precheck()
+        if precheck is not None:
+            return precheck
+        assert stat is not None
+
+        consumed = self._splitter.consumed
         remaining = stat.st_size - consumed
         if remaining <= 0:
             return PollResult()
@@ -467,9 +510,7 @@ class SessionReader:
             unsupported_mode=self._unsupported,
         )
 
-    def read_messages(self, entries: list[IndexEntry]) -> list[Message]:
-        if not entries:
-            return []
+    def _ensure_readable(self) -> None:
         if self._unsupported is not None:
             raise SessionReadError("unsupported")
         if self._halted:
@@ -481,26 +522,34 @@ class SessionReader:
         if not self._source_allowed():
             raise SessionReadError("denied")
 
+    def _read_entry(self, handle: BinaryIO, entry: IndexEntry) -> Message:
+        handle.seek(entry.sequence)
+        raw = handle.read(entry.end - entry.sequence)
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise SessionIndexMismatch() from exc
+        if not isinstance(record, dict):
+            raise SessionIndexMismatch()
+        message = self._extract_record(record, entry.sequence)
+        if (
+            message is None
+            or message.message_id != entry.message_id
+            or message.revision != entry.revision
+        ):
+            raise SessionIndexMismatch()
+        return message
+
+    def read_messages(self, entries: list[IndexEntry]) -> list[Message]:
+        if not entries:
+            return []
+        self._ensure_readable()
+
         messages: list[Message] = []
         try:
             with self.path.open("rb") as handle:
                 for entry in entries:
-                    handle.seek(entry.sequence)
-                    raw = handle.read(entry.end - entry.sequence)
-                    try:
-                        record = json.loads(raw)
-                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                        raise SessionIndexMismatch() from exc
-                    if not isinstance(record, dict):
-                        raise SessionIndexMismatch()
-                    message = self._extract_record(record, entry.sequence)
-                    if (
-                        message is None
-                        or message.message_id != entry.message_id
-                        or message.revision != entry.revision
-                    ):
-                        raise SessionIndexMismatch()
-                    messages.append(message)
+                    messages.append(self._read_entry(handle, entry))
         except OSError as exc:
             raise SessionReadError("read") from exc
         return messages
@@ -530,38 +579,51 @@ class SessionReader:
             return None, None
 
         if self.provider is AgentProvider.CLAUDE:
-            stats.events += 1
-            if self._halted:
-                stats.ignored += 1
-                return None, None
-            result = self._extractor.extract(record, offset)
-            if result.reason == "thread_mismatch":
-                self._halted = True
-                session_id = record.get("sessionId")
-                return None, session_id if isinstance(session_id, str) else None
-            if result.message is None:
-                stats.ignored += 1
-                return None, None
-            stats.extracted += 1
-            return result.message, None
-
+            return self._process_claude_line(record, offset, stats)
         if record.get("type") == "session_meta":
-            payload = record.get("payload")
-            if isinstance(payload, dict):
-                seen_id = payload.get("id")
-                if isinstance(seen_id, str) and seen_id and seen_id != self.thread_id:
-                    self._halted = True
-                    return None, seen_id
-                try:
-                    mode = parse_history_mode(payload.get("history_mode"))
-                except UnsupportedHistoryMode as exc:
-                    self._unsupported = repr(exc.mode)
-                    self._halted = True
-                    return None, None
-                self._mode = mode
-                self._extractor = Extractor(self.thread_id, mode)
-            return None, None
+            return self._process_session_meta(record, stats)
+        return self._process_codex_line(record, offset, stats)
 
+    def _process_claude_line(
+        self, record: dict[str, Any], offset: int, stats: ScanStats
+    ) -> tuple[Message | None, str | None]:
+        stats.events += 1
+        if self._halted:
+            stats.ignored += 1
+            return None, None
+        result = self._extractor.extract(record, offset)
+        if result.reason == "thread_mismatch":
+            self._halted = True
+            session_id = record.get("sessionId")
+            return None, session_id if isinstance(session_id, str) else None
+        if result.message is None:
+            stats.ignored += 1
+            return None, None
+        stats.extracted += 1
+        return result.message, None
+
+    def _process_session_meta(
+        self, record: dict[str, Any], stats: ScanStats
+    ) -> tuple[Message | None, str | None]:
+        payload = record.get("payload")
+        if isinstance(payload, dict):
+            seen_id = payload.get("id")
+            if isinstance(seen_id, str) and seen_id and seen_id != self.thread_id:
+                self._halted = True
+                return None, seen_id
+            try:
+                mode = parse_history_mode(payload.get("history_mode"))
+            except UnsupportedHistoryMode as exc:
+                self._unsupported = repr(exc.mode)
+                self._halted = True
+                return None, None
+            self._mode = mode
+            self._extractor = Extractor(self.thread_id, mode)
+        return None, None
+
+    def _process_codex_line(
+        self, record: dict[str, Any], offset: int, stats: ScanStats
+    ) -> tuple[Message | None, str | None]:
         stats.events += 1
         if self._halted:
             stats.ignored += 1

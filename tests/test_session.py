@@ -657,3 +657,19 @@ def test_claude_reader_rejects_symlinks_and_paths_outside_root(tmp_path):
     valid.unlink()
     valid.symlink_to(target)
     assert reader.poll().denied is True
+
+
+def test_read_session_meta_accepts_unterminated_final_record(tmp_path):
+    path = tmp_path / "rollout-x.jsonl"
+    path.write_bytes(dump([meta("eof")]).rstrip(b"\n"))
+    payload = read_session_meta(path)
+    assert payload is not None
+    assert payload["id"] == "eof"
+
+
+def test_read_session_meta_skips_line_at_256k_boundary(tmp_path):
+    path = tmp_path / "rollout-x.jsonl"
+    path.write_bytes(b"x" * (256 * 1024) + b"\n" + dump([meta("after")]))
+    payload = read_session_meta(path)
+    assert payload is not None
+    assert payload["id"] == "after"
