@@ -557,7 +557,7 @@ class MessageWidget(Vertical):
         return "  ".join(parts)
 
 
-class CodexJaApp(App[None]):
+class TranspaneApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
     #status { height: 1; background: $panel; padding: 0 1; }
@@ -599,7 +599,7 @@ class CodexJaApp(App[None]):
         self._sessions: list[SessionInfo] = []
 
     def compose(self) -> ComposeResult:
-        yield Static("codex-ja", id="status")
+        yield Static("transpane", id="status")
         yield MessageScroll(id="messages")
         yield Static(
             "s: セッション  o: 原文/翻訳  r: 再試行  h: 履歴追加  End: 最新  q: 終了",

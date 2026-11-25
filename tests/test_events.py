@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from codex_ja.events import (
+from transpane.events import (
     Extractor,
     HistoryMode,
     UnsupportedHistoryMode,
     parse_history_mode,
 )
-from codex_ja.models import MessageKind
+from transpane.models import MessageKind
 
 
 def test_legacy_extraction_skips_response_items():

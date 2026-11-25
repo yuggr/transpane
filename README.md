@@ -1,4 +1,4 @@
-# codex-ja
+# transpane
 
 既存の Codex CLI / TUI をそのまま使いながら、選択したセッションの英語の進捗・最終回答を
 ローカルの PLaMo 翻訳サーバーで日本語表示する独立 TUI（＋診断 CLI）です。
@@ -20,16 +20,30 @@
 ## インストール
 
 ```bash
-cd /path/to/codex-ja
+cd /path/to/transpane
 uv sync --locked
-uv run codex-ja --help
+uv run transpane --help
 ```
 
-`uv run codex-ja` は `uv.lock` に固定された依存で動作します。
+`uv run transpane` は `uv.lock` に固定された依存で動作します。
+
+### 旧名称 `codex-ja` からの移行
+
+設定・キャッシュのパスも `transpane` に変わりました。旧パスは自動では参照しません。
+必要に応じて手動で移動してください。
+
+```bash
+mkdir -p ~/.config/transpane
+mv ~/.config/codex-ja/config.toml ~/.config/transpane/config.toml
+
+# キャッシュを引き継ぐ場合のみ（任意）
+mkdir -p ~/.cache/transpane
+mv ~/.cache/codex-ja/translations.sqlite3 ~/.cache/transpane/translations.sqlite3
+```
 
 ## 設定
 
-設定ファイル: `${XDG_CONFIG_HOME:-~/.config}/codex-ja/config.toml`
+設定ファイル: `${XDG_CONFIG_HOME:-~/.config}/transpane/config.toml`
 
 ```toml
 [translation]
@@ -69,18 +83,18 @@ base_url = "http://192.168.1.50:1234/v1"
 
 ```bash
 # 診断（本文は送信しない）
-uv run codex-ja doctor
+uv run transpane doctor
 
 # セッション一覧（本文は出さない）
-uv run codex-ja sessions
+uv run transpane sessions
 
 # ログ形式と件数の確認（本文は出さない）
-uv run codex-ja inspect --session <thread-id>
+uv run transpane inspect --session <thread-id>
 
 # TUI（候補から選択）
-uv run codex-ja
-uv run codex-ja --cwd /path/to/project   # cwd 完全一致で候補を絞る
-uv run codex-ja --session <thread-id>    # 明示選択（確認済み扱い）
+uv run transpane
+uv run transpane --cwd /path/to/project   # cwd 完全一致で候補を絞る
+uv run transpane --session <thread-id>    # 明示選択（確認済み扱い）
 ```
 
 `--cwd` と `--session` は排他です。未知 ID・重複 ID はエラー終了します。
@@ -97,8 +111,8 @@ cd /path/to/project
 codex
 
 # 右ペイン
-cd /path/to/codex-ja
-uv run codex-ja --cwd /path/to/project
+cd /path/to/transpane
+uv run transpane --cwd /path/to/project
 ```
 
 Codex の起動・入力・承認・終了操作は変わりません。ビューアを終了・再起動しても
@@ -177,7 +191,7 @@ CLI オプション、環境変数、snake_case / camelCase の識別子、関�
 
 ## キャッシュ
 
-- 場所: `${XDG_CACHE_HOME:-~/.cache}/codex-ja/translations.sqlite3`
+- 場所: `${XDG_CACHE_HOME:-~/.cache}/transpane/translations.sqlite3`
 - ディレクトリ 0700、DB 0600。既存の権限が広い場合は自動変更せず、診断して利用停止します。
 - 保存するのは翻訳成功結果だけです。元の transcript や入力文字列そのものは保存しません。
 - cache key は `[cache_schema_version, translation_policy_version, base_url, model_id,
@@ -188,8 +202,8 @@ CLI オプション、環境変数、snake_case / camelCase の識別子、関�
 
 ```bash
 # 退避（削除しない）
-mv ~/.cache/codex-ja/translations.sqlite3 \
-   ~/.cache/codex-ja/translations.sqlite3.bak-$(date +%Y%m%d)
+mv ~/.cache/transpane/translations.sqlite3 \
+   ~/.cache/transpane/translations.sqlite3.bak-$(date +%Y%m%d)
 ```
 
 次回起動時に新しい DB が作成され、再翻訳されます。
@@ -274,7 +288,7 @@ uv run ruff format --check src tests
 ```
 
 ```text
-src/codex_ja/
+src/transpane/
 ├── cli.py           # 引数・診断CLI
 ├── config.py        # 設定解決・URL制約・内部定数
 ├── models.py        # dataclass / enum
@@ -304,5 +318,5 @@ src/codex_ja/
 | セッションが出ない | `CODEX_HOME`、`sessions/**/rollout-*.jsonl`、`session_meta` を確認 |
 | `未対応の履歴形式` と出る | Codex 更新で形式が変わった可能性があります。`inspect` で件数を確認し、本文は送信されません |
 | 翻訳が `部分翻訳` のまま | 保護マーカーの復元失敗・長文分割不可・一部セグメント失敗。`r` で再試行 |
-| キャッシュの警告が出る | `~/.cache/codex-ja` の権限を確認。既存 DB は自動変更・削除されません |
+| キャッシュの警告が出る | `~/.cache/transpane` の権限を確認。既存 DB は自動変更・削除されません |
 ```

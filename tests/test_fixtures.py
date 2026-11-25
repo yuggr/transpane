@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codex_ja.models import MessageKind
-from codex_ja.session import SessionReader
+from transpane.models import MessageKind
+from transpane.session import SessionReader
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

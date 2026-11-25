@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from codex_ja import cli
-from codex_ja.translation import ErrorKind, TranslationFailure
+from transpane import cli
+from transpane.translation import ErrorKind, TranslationFailure
 
 SECRET_BODY = "SECRET BODY SHOULD NOT BE PRINTED"
 USER_TEXT = "保存処理を調べて"
@@ -58,7 +58,7 @@ def records() -> list[dict]:
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    config_dir = tmp_path / "config" / "codex-ja"
+    config_dir = tmp_path / "config" / "transpane"
     config_dir.mkdir(parents=True)
     (config_dir / "config.toml").write_text(
         '[translation]\nbase_url = "http://127.0.0.1:1234/v1"\nmodel = "plamo-3-translate-2b"\n',
@@ -97,7 +97,7 @@ def test_inspect_reports_counts_without_body(env, capsys):
     assert "無視数: 1" in out
     assert USER_TEXT not in out
     assert SECRET_BODY not in out
-    assert not (env / "cache" / "codex-ja" / "translations.sqlite3").exists()
+    assert not (env / "cache" / "transpane" / "translations.sqlite3").exists()
 
 
 def test_inspect_unknown_session(env, capsys):
@@ -141,7 +141,7 @@ def test_doctor_translation_failure(env, capsys, monkeypatch):
 
 
 def test_config_errors_exit_2(env, monkeypatch, capsys):
-    config_path = env / "config" / "codex-ja" / "config.toml"
+    config_path = env / "config" / "transpane" / "config.toml"
     config_path.write_text("[translation]\nmodel = ''\n", encoding="utf-8")
     code = cli.main(["sessions"])
     assert code == 2

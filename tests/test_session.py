@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from codex_ja import session as session_module
-from codex_ja.session import (
+from transpane import session as session_module
+from transpane.session import (
     SessionError,
     SessionReader,
     discover_sessions,

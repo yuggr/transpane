@@ -1,10 +1,10 @@
-# Codex Japanese Presentation Layer — 実装設計書
+# Transpane — Codex日本語表示レイヤー 実装設計書
 
 - Version: 1.0
 - Date: 2026-11-25
 - Status: 実装指示案（実環境の互換性確認を着手条件とする）
 - Implementation agent: DeepSeek
-- Working name: `codex-ja`
+- Working name: `transpane`
 - Deliverable: 独立したローカルCLI / TUIアプリケーション
 
 ## 0. 実装エージェントへの指示
@@ -74,11 +74,11 @@ Codexとビューアに通信制御・プロセス親子関係はない。ビュ
 ### 3.1 モジュール
 
 ```text
-codex-ja/
+transpane/
 ├── pyproject.toml
 ├── uv.lock
 ├── README.md
-├── src/codex_ja/
+├── src/transpane/
 │   ├── __main__.py
 │   ├── cli.py           # 引数・診断CLI
 │   ├── config.py        # 設定解決・URL制約
@@ -98,16 +98,16 @@ codex-ja/
 
 ## 4. CLI・設定契約
 
-`pyproject.toml`のconsole script名は`codex-ja`。
+`pyproject.toml`のconsole script名は`transpane`。
 
 ```bash
 uv sync --locked
-uv run codex-ja doctor
-uv run codex-ja sessions
-uv run codex-ja inspect --session <thread-id>
-uv run codex-ja                         # TUI: セッション選択
-uv run codex-ja --cwd .                 # 完全一致のcwdで候補を絞る
-uv run codex-ja --session <thread-id>   # 明示選択してTUI
+uv run transpane doctor
+uv run transpane sessions
+uv run transpane inspect --session <thread-id>
+uv run transpane                         # TUI: セッション選択
+uv run transpane --cwd .                 # 完全一致のcwdで候補を絞る
+uv run transpane --session <thread-id>   # 明示選択してTUI
 ```
 
 - `doctor`: 設定、セッションディレクトリの読取可否、DBの利用可否、`GET /v1/models`で接続・モデル識別子を検証。本文送信なし。成功0、失敗1、引数・設定不正2。
@@ -116,7 +116,7 @@ uv run codex-ja --session <thread-id>   # 明示選択してTUI
 - `--session`と`--cwd`は排他。未知IDや重複IDはエラー。複数候補なら人間が選択し、自動選択しない。`--cwd`はLinux側の絶対正規化パスで完全一致。
 - 起動時、候補が一つでも翻訳対象のセッションID・cwdを表示し、ユーザーの選択確認後に本文送信を開始する。`--session`指定は選択確認として扱う。
 
-設定ファイル: `${XDG_CONFIG_HOME:-~/.config}/codex-ja/config.toml`。TOMLの読込は`tomllib`。不明な設定項目はエラー。環境変数は下記の明示項目だけを参照し、Codexの認証設定は読み込まない。
+設定ファイル: `${XDG_CONFIG_HOME:-~/.config}/transpane/config.toml`。TOMLの読込は`tomllib`。不明な設定項目はエラー。環境変数は下記の明示項目だけを参照し、Codexの認証設定は読み込まない。
 
 ```toml
 [translation]
@@ -132,7 +132,7 @@ form = "polite"
 | 翻訳URL | 設定値、未指定なら上記loopback URL |
 | モデルID | 設定必須。自動で別モデルを選択しない |
 | 文体 | `polite` 既定、`plain` も可 |
-| キャッシュ | `${XDG_CACHE_HOME:-~/.cache}/codex-ja/translations.sqlite3` |
+| キャッシュ | `${XDG_CACHE_HOME:-~/.cache}/transpane/translations.sqlite3` |
 
 内部定数（初期値であり、性能計測後に変更可）: 読取間隔250ms、一覧更新2秒、接続timeout 3秒、読取timeout 60秒、1要求全体90秒、1セグメント最大1000 Unicode code points、同時HTTP要求1、初期表示50メッセージ、追加履歴50件単位、同時保留キュー上限32件。設定項目を増やさず定数を一箇所で管理する。
 
@@ -352,7 +352,7 @@ DB接続は専用の短時間処理に限定し、トランザクションで保
 ### 10.1 画面構成
 
 ```text
-┌─ codex-ja ── anki-deck / thread: 1234… ──────┐
+┌─ transpane ── anki-deck / thread: 1234… ──────┐
 │ PLaMo: 接続中 | 待ち: 2 | 最終更新: 10:21:18 │
 ├─────────────────────────────────────────────┤
 │ 10:21:00  あなた                             │
@@ -392,8 +392,8 @@ codex
 
 ```bash
 # 右ペイン: 独立ツール
-cd /path/to/codex-ja
-uv run codex-ja --cwd /path/to/project
+cd /path/to/transpane
+uv run transpane --cwd /path/to/project
 ```
 
 新しいセッションを開始するときは右ペインのセッション一覧から選択。起動時に該当セッションがなくても一覧の再検出を待てる。Codex側の操作と独立しているため、ビューアを終了・再起動してもCodexの実行は継続する。
@@ -477,7 +477,7 @@ Phase 4の独自app-server、サブエージェント横断表示、Web UIなど
 
 ## 14. Definition of Done
 
-- `uv sync --locked`で依存を再現でき、`uv run codex-ja --help`が成功。
+- `uv sync --locked`で依存を再現でき、`uv run transpane --help`が成功。
 - `uv run pytest -q`で§13の対象契約が合格。Ruff lint・format checkを導入し、合格する。
 - READMEにインストール、設定例、実モデルIDの確認、WSL接続、Codex英語出力方針、診断、操作、キャッシュ退避、非対応範囲を記載。
 - 自動テストと手動実機確認を分けて報告し、未確認を成功扱いしない。

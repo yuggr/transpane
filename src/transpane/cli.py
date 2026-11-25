@@ -18,7 +18,7 @@ from .session import (
     select_session,
 )
 from .translation import TranslationClient, TranslationFailure
-from .ui import CodexJaApp
+from .ui import TranspaneApp
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -27,7 +27,7 @@ EXIT_USAGE = 2
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="codex-ja",
+        prog="transpane",
         description="Codex のセッションログを日本語表示する独立 TUI",
     )
     selection = parser.add_mutually_exclusive_group()
@@ -172,7 +172,7 @@ def run_tui(config: Config, session_id: str | None, cwd: str | None) -> int:
             print(f"セッションエラー: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
-    app = CodexJaApp(config, initial_session=initial_session, cwd_filter=cwd)
+    app = TranspaneApp(config, initial_session=initial_session, cwd_filter=cwd)
     app.run()
     return EXIT_OK
 
