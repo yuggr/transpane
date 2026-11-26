@@ -316,9 +316,13 @@ class Monitor:
         try:
             messages = await asyncio.to_thread(reader.read_messages, selected) if selected else []
         except SessionIndexMismatch:
+            if generation != self._generation:
+                return None
             outcome.failure = "index_mismatch"
             return outcome
         except SessionReadError as exc:
+            if generation != self._generation:
+                return None
             outcome.failure = "read_error"
             outcome.read_error = exc
             return outcome
