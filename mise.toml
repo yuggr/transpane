@@ -16,6 +16,9 @@ description = "Run each fuzz target briefly"
 run = [
   "go test ./internal/protection -run '^$' -fuzz '^FuzzProtect$' -fuzztime 30s",
   "go test ./internal/protection -run '^$' -fuzz '^FuzzValidate$' -fuzztime 30s",
+  "go test ./internal/transcript -run '^$' -fuzz '^FuzzDecodeObject$' -fuzztime 30s",
+  "go test ./internal/transcript -run '^$' -fuzz '^FuzzLineSplitter$' -fuzztime 30s",
+  "go test ./internal/config -run '^$' -fuzz '^FuzzValidateBaseURL$' -fuzztime 30s",
 ]
 
 [tasks.build]

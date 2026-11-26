@@ -47,3 +47,19 @@ func TestRejectedURLs(t *testing.T) {
 		}
 	}
 }
+
+func FuzzValidateBaseURL(f *testing.F) {
+	for _, seed := range []string{"http://127.0.0.1:1234/v1", "http://[::1]:80/v1", "http://10.0.0.1/v1", "https://x/v1", ""} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		normalized, err := ValidateBaseURL(raw)
+		if err != nil {
+			return
+		}
+		again, err := ValidateBaseURL(normalized)
+		if err != nil || again != normalized {
+			t.Fatalf("normalization is not idempotent: %q -> %q -> %q (%v)", raw, normalized, again, err)
+		}
+	})
+}
