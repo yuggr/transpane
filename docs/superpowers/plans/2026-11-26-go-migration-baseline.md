@@ -24,10 +24,10 @@ suite does not yet reproduce the exact interleaving.
 | `test_claude_events.py` | 12 | `internal/transcript/extract_test.go` | Complete: flags, wrappers, tool blocks, synthetic, uuid |
 | `test_session.py` | 34 | `internal/transcript/{discover,reader}_test.go` | Complete for discovery, boundaries, index, symlink, rebuild |
 | `test_markdown.py` | 16 | `internal/protection` | Complete for samples, spans, skip reasons, split, marker validation |
-| `test_translation.py` | 17 | `internal/translate` + `internal/monitor` scheduler tests | Client complete; scheduler priority/cancel/deferred complete; live async interleavings replaced by deterministic monitor tests |
+| `test_translation.py` | 17 | `internal/translate` + `internal/monitor` scheduler tests | Client complete; scheduler accounting complete; invalid marker/no-cache, cancel during cache lookup/POST, 4xx/5xx state, partial unit failure and bounded queue covered deterministically |
 | `test_cli.py` | 20 | `internal/cli` | Complete for grammar, diagnostics, source rules, no-body/no-cache |
-| `test_ui.py` | 21 | `internal/monitor` + `internal/tui` | Monitor translation/history/retry/rebuild/stop complete; TUI rendering/sanitize/picker/scroll complete; PTY screen comparison not run |
-| `test_claude_ui.py` | 26 | `internal/monitor` + `internal/tui` | Same-ID/provider switch and stale in-flight result covered; every barrier combination from PR #4 is **PARTIAL** |
+| `test_ui.py` | 21 | `internal/monitor` + `internal/tui` | Monitor translation/history/retry/rebuild/stop complete; TUI rendering/sanitize/picker/scroll complete; Textual pixel/ANSI comparison and exhaustive terminal interleavings not run |
+| `test_claude_ui.py` | 26 | `internal/monitor` + `internal/tui` | Same-ID/provider switch and stale scan/read/poll/reconnect results covered; exact historical barrier combinations are replaced by deterministic equivalents |
 | `test_fixtures.py` | 3 | `internal/compat` | Synthetic differential golden |
 
 ## Differential results
@@ -40,6 +40,8 @@ suite does not yet reproduce the exact interleaving.
   segment texts/trailing and empty-map render match the Python oracle.
 - Cache keys: Python-produced SHA-256 values match for ASCII, Japanese,
   U+2028/U+2029, quotes/backslashes, control characters, `<>&/` and emoji.
+- Cache DB: a committed synthetic DB created by Python is read by Go in
+  `internal/cache`; a Go-created DB was read by Python in manual verification.
 - Approved differences: port 0 is rejected (Python normalized it to 80),
   IPv4-mapped IPv6 and zoned IPv6 are rejected, non-regular files are refused,
   and an unsupported mode discovered by poll stops translation immediately
@@ -49,3 +51,21 @@ suite does not yet reproduce the exact interleaving.
 
 `uv run ruff check .` and `uv run ruff format --check .` are recorded in the
 Phase 5 verification log (not used as a Go quality gate).
+
+## Approved differences and constraints
+
+- Non-canonical IPv6 loopback (`[0:0:0:0:0:0:0:1]`) is canonicalized to `[::1]`;
+  Python preserves the input text, so cache keys can differ for this configuration.
+- Empty query (`/v1?`) is rejected by Go but accepted by Python. Fail-closed.
+- Port 0 is rejected by Go; Python normalized it to 80.
+- IPv4-mapped IPv6, zoned IPv6, non-regular files and symlinked session files are
+  rejected by Go.
+- `~user` is not expanded; only `~` and `~/` use the current home directory.
+- A pathological backtick sequence such as two single backticks plus a later
+  single backtick can choose a different protected span than Python's
+  backtracking regex. Go follows the spec's same-length procedural rule.
+- CLI long-option prefix matching is supported (`--sou`, `--cw`, `--ses`);
+  subcommand `--help` prints the shared help text rather than argparse's
+  per-subcommand text, while preserving exit 0.
+- Malformed ISO-8601 timestamp variants outside the accepted layouts render
+  `時刻不明`; the baseline accepted a slightly wider set.

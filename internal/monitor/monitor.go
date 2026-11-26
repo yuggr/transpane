@@ -394,8 +394,7 @@ func (m *Monitor) handleSwitch(request switchRequest) {
 	m.paused = false
 	m.connection = ConnectionUnknown
 	m.connectionError = ""
-	m.reconnecting = false
-	m.retryAfterReconnect = false
+	m.resetGenerationTransient()
 	m.lastUpdate = time.Now().Format("15:04:05")
 	if m.readerFactory != nil {
 		m.reader = m.readerFactory(*request.session)
@@ -411,6 +410,14 @@ func (m *Monitor) handleSwitch(request switchRequest) {
 		purpose:    "initial",
 	})
 	m.emitStatus()
+}
+
+// resetGenerationTransient clears reconnect state that belongs to the old
+// generation. The paused state is intentionally kept: a new generation still
+// needs a successful GET before translation resumes.
+func (m *Monitor) resetGenerationTransient() {
+	m.reconnecting = false
+	m.retryAfterReconnect = false
 }
 
 func (m *Monitor) finishPendingSwitch() {
@@ -968,6 +975,7 @@ func (m *Monitor) rebuild(generation uint64, note string) {
 	m.scheduler.CancelGeneration(oldGeneration)
 	m.genCancel()
 	m.genCtx, m.genCancel = context.WithCancel(m.ctx)
+	m.resetGenerationTransient()
 	m.clearPending()
 	m.stopped = true
 	m.state = stateRebuilding
@@ -989,6 +997,7 @@ func (m *Monitor) stop(note string, reset bool) {
 	m.scheduler.CancelGeneration(oldGeneration)
 	m.genCancel()
 	m.genCtx, m.genCancel = context.WithCancel(m.ctx)
+	m.resetGenerationTransient()
 	m.clearPending()
 	m.stopped = true
 	m.state = stateStopped
@@ -1135,11 +1144,21 @@ func (m *Monitor) translateSegment(fallback context.Context, job *Job, memo map[
 	}
 	memo[key] = translated
 	if ctx.Err() == nil {
-		m.cache.Put(key, translated, time.Now().UTC().Format("2006-01-02T15:04:05.999999-07:00"))
+		m.cache.Put(key, translated, timestampNow())
 	}
 	response.ok = true
 	response.translated = translated
 	return response
+}
+
+// timestampNow matches Python datetime.now(UTC).isoformat(): six fractional
+// digits when microseconds are non-zero, otherwise no fraction.
+func timestampNow() string {
+	now := time.Now().UTC()
+	if now.Nanosecond()/1000 == 0 {
+		return now.Format("2006-01-02T15:04:05-07:00")
+	}
+	return now.Format("2006-01-02T15:04:05.000000-07:00")
 }
 
 func (m *Monitor) respondTranslation(response translationResponse) {

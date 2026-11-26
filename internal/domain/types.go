@@ -187,7 +187,14 @@ func FormatTimestamp(timestamp string) string {
 	if timestamp == "" {
 		return "時刻不明"
 	}
-	layouts := []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999", "2006-01-02 15:04:05.999999999"}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02T15:04:05.999999999-0700",
+		"2006-01-02 15:04:05.999999999-0700",
+		"2006-01-02",
+	}
 	for _, layout := range layouts {
 		parsed, err := time.Parse(layout, timestamp)
 		if err != nil {
@@ -202,11 +209,25 @@ func FormatTimestamp(timestamp string) string {
 }
 
 func hasNumericOffset(value string) bool {
-	if len(value) < 6 {
-		return false
+	if len(value) >= 6 {
+		tail := value[len(value)-6:]
+		if (tail[0] == '+' || tail[0] == '-') && tail[3] == ':' {
+			return true
+		}
 	}
-	tail := value[len(value)-6:]
-	return (tail[0] == '+' || tail[0] == '-') && tail[3] == ':'
+	if len(value) >= 5 {
+		tail := value[len(value)-5:]
+		if tail[0] != '+' && tail[0] != '-' {
+			return false
+		}
+		for _, r := range tail[1:] {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // String is for diagnostics that must not include message bodies.

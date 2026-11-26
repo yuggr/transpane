@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yuggr/transpane/internal/cache"
 	"github.com/yuggr/transpane/internal/config"
 	"github.com/yuggr/transpane/internal/domain"
+	"github.com/yuggr/transpane/internal/protection"
 	"github.com/yuggr/transpane/internal/transcript"
 	"github.com/yuggr/transpane/internal/translate"
 )
@@ -659,6 +661,95 @@ func TestStaleReconnectResultIgnoredAfterSwitch(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if strings.Contains(listener.lastStatus().Note, "再接続") {
 		t.Fatalf("stale reconnect changed new session note: %+v", listener.lastStatus())
+	}
+}
+
+func TestMonitorInvalidMarkerIsNotCached(t *testing.T) {
+	cfg := testConfig(t)
+	message := fakeMessage("t", "a1", "Read `a.py` now.")
+	scripted := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("t", message), nil },
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) { return []domain.Message{message}, nil },
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{handler: func(string) (int, string) {
+		return 200, `{"choices":[{"message":{"content":"マーカーなし"},"finish_reason":"stop"}]}`
+	}}
+	instance := cache.Open(cfg.CachePath)
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client: client, Cache: instance, PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(domain.SessionInfo) reader { return scripted },
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].State == domain.TranslationStateFailed
+	})
+	doc := protection.ProtectDocument(message.Original)
+	segment := doc.TranslatableUnits()[0].Segments[0].Text
+	if _, ok := instance.Get(cache.Key(cfg.BaseURL, cfg.Model, cfg.Form, segment)); ok {
+		t.Fatal("invalid marker output was cached")
+	}
+}
+
+func TestMonitorFourHundredAndFiveHundredConnectionState(t *testing.T) {
+	for _, item := range []struct {
+		status int
+		server string
+	}{
+		{status: 400, server: "接続成功"},
+		{status: 503, server: "通信失敗"},
+	} {
+		t.Run(fmt.Sprintf("status-%d", item.status), func(t *testing.T) {
+			cfg := testConfig(t)
+			message := fakeMessage("t", "a1", "Body.")
+			scripted := &scriptedReader{
+				scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("t", message), nil },
+				readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) { return []domain.Message{message}, nil },
+			}
+			listener := &testListener{}
+			fake := &fakeTransport{handler: func(string) (int, string) { return item.status, "{}" }}
+			monitor := newMonitorWithReaders(t, cfg, fake, listener, map[string]*scriptedReader{"t": scripted})
+			session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+			monitor.Start(&session)
+			waitUntil(t, 3*time.Second, func() bool {
+				views := monitor.Views()
+				return len(views) == 1 && views[0].State == domain.TranslationStateFailed
+			})
+			if got := listener.lastStatus().Server; got != item.server {
+				t.Fatalf("server state %q want %q", got, item.server)
+			}
+		})
+	}
+}
+
+func TestMonitorPartialUnitFailure(t *testing.T) {
+	cfg := testConfig(t)
+	message := fakeMessage("t", "a1", "First line.\n\nSecond line.")
+	scripted := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("t", message), nil },
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) { return []domain.Message{message}, nil },
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{handler: func(text string) (int, string) {
+		if strings.Contains(text, "Second") {
+			return 503, "{}"
+		}
+		return 200, ""
+	}}
+	monitor := newMonitorWithReaders(t, cfg, fake, listener, map[string]*scriptedReader{"t": scripted})
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && len(views[0].Failed) == 1
+	})
+	view := monitor.Views()[0]
+	if view.State != domain.TranslationStatePartial || len(view.Translations) != 1 || len(view.Failed) != 1 {
+		t.Fatalf("partial state %+v", view)
 	}
 }
 

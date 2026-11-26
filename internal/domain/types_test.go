@@ -53,6 +53,12 @@ func TestFormatTimestamp(t *testing.T) {
 	if got := FormatTimestamp("2026-11-25T01:02:03"); got != "01:02:03" {
 		t.Fatal(got)
 	}
+	if got := FormatTimestamp("2026-11-25"); got != "00:00:00" {
+		t.Fatalf("date only: %s", got)
+	}
+	if got := FormatTimestamp("2026-11-25T01:02:03+0900"); len(got) != 8 {
+		t.Fatalf("compact offset: %s", got)
+	}
 	got := FormatTimestamp("2026-11-25T01:02:03Z")
 	if len(got) != 8 || strings.Count(got, ":") != 2 {
 		t.Fatalf("local time %q", got)

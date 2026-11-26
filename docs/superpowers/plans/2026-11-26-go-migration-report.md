@@ -46,10 +46,10 @@ G01-G26:
 | G09 | PASS | Extractors/monitor: secret line skipped, only agent text reaches fake HTTP; tool/thinking ignored |
 | G10 | PASS | `internal/translate`: POST/GET shape, 4xx/5xx, invalid/empty/incomplete, timeout/connect, context cancel |
 | G11 | PASS | Proxy env ignored, redirect not followed, IP allowlist; TUI/CLI control-sequence stripping tests |
-| G12 | PASS* | Cache key Python goldens, perms/corrupt/lock/non-destructive; Go↔Python DB read verified manually (synthetic DB). Read-only DB case not separately automated. |
+| G12 | PASS* | Cache key Python goldens, perms/corrupt/lock/non-destructive; Python-created synthetic DB read by Go test; Go-created DB read by Python manually. A mid-life read-only transition is not separately automated. |
 | G13 | PASS | Scheduler tests: cache reuse, invalid marker not cached, memo, policy/model/form keys |
 | G14 | PASS | Scheduler tests: one worker, active≤32, deferred FIFO, priority/sequence, requeue, accounting |
-| G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, and remaining-segment suppression |
+| G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, remaining-segment suppression |
 | G16 | PASS | Same ID across Codex/Claude, A→B→A, same-ID picker rows, stale in-flight B discarded |
 | G17 | PASS* | Old scan/read/poll results and reconnect results ignored after switch; remaining switch/rebuild index-mismatch/read-error combinations are covered but not exhaustively interleaved |
 | G18 | PASS | Denied and thread-change stop retained; retry/history blocked; explicit switch recovers |

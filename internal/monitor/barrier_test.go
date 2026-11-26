@@ -332,6 +332,86 @@ func TestOldPollResultIsIgnoredAfterSwitch(t *testing.T) {
 	}
 }
 
+func TestRebuildDuringReconnectAllowsNewRetry(t *testing.T) {
+	cfg := testConfig(t)
+	allowRebuild := make(chan struct{})
+	scripted := &scriptedReader{}
+	scripted.scanFn = func(call int) (transcript.ScanResult, error) {
+		if call == 1 {
+			return fakeScan("t", fakeMessage("t", "a1", "one")), nil
+		}
+		return fakeScan("t", fakeMessage("t", "a2", "replaced")), nil
+	}
+	scripted.readFn = func(call int, _ []domain.IndexEntry) ([]domain.Message, error) {
+		if call == 1 {
+			return []domain.Message{fakeMessage("t", "a1", "one")}, nil
+		}
+		return []domain.Message{fakeMessage("t", "a2", "replaced")}, nil
+	}
+	scripted.pollFn = func(call int) transcript.PollResult {
+		if call == 1 {
+			<-allowRebuild
+			return transcript.PollResult{Rebuilt: true}
+		}
+		return transcript.PollResult{}
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{handler: func(text string) (int, string) {
+		if strings.Contains(text, "one") {
+			return 500, "{}"
+		}
+		return 200, ""
+	}}
+	fake.getGate = make(chan struct{})
+	fake.getStarted = make(chan struct{}, 2)
+	fake.getDone = make(chan struct{})
+	fake.getFail = true
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client:        client,
+		PollInterval:  10 * time.Millisecond,
+		ReaderFactory: func(domain.SessionInfo) reader { return scripted },
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].State == domain.TranslationStateFailed
+	})
+	monitor.Retry()
+	select {
+	case <-fake.getStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not start")
+	}
+	close(allowRebuild)
+	waitUntil(t, 3*time.Second, func() bool {
+		return listener.noteSeen("再構築")
+	})
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.ID == "a2"
+	})
+	close(fake.getGate)
+	select {
+	case <-fake.getDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stale reconnect did not finish")
+	}
+	fake.mu.Lock()
+	fake.getGate = nil
+	fake.getDone = nil
+	fake.getStarted = make(chan struct{}, 2)
+	fake.getFail = false
+	fake.mu.Unlock()
+	monitor.Retry()
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.ID == "a2" && allSettled(views) && views[0].State == domain.TranslationStateTranslated
+	})
+}
+
 func TestThreadChangeStopsAndSwitchRecovers(t *testing.T) {
 	cfg := testConfig(t)
 	changed := "other"

@@ -202,6 +202,20 @@ func TestSessionsStripsControlCharacters(t *testing.T) {
 	}
 }
 
+func TestLongOptionPrefixesMatchArgparse(t *testing.T) {
+	env := testEnv(t)
+	writeSessions(t, env, "t")
+	if result := runApp(t, env, []string{"--sou", "codex", "sessions"}, nil); result.code != 0 {
+		t.Fatalf("%+v", result)
+	}
+	if result := runApp(t, env, []string{"--s", "codex", "sessions"}, nil); result.code != 2 || !strings.Contains(result.err, "ambiguous") {
+		t.Fatalf("%+v", result)
+	}
+	if result := runApp(t, env, []string{"doctor", "--h"}, nil); result.code != 0 {
+		t.Fatalf("%+v", result)
+	}
+}
+
 func TestSessionsEmpty(t *testing.T) {
 	env := testEnv(t)
 	result := runApp(t, env, []string{"sessions"}, nil)

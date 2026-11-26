@@ -40,6 +40,11 @@ func parseArgs(args []string) (parsedArgs, error) {
 	index := 0
 	for index < len(args) {
 		arg := args[index]
+		expanded, err := canonicalOption(arg)
+		if err != nil {
+			return parsed, err
+		}
+		arg = expanded
 		if parsed.command == "" {
 			switch {
 			case arg == "-h" || arg == "--help":
@@ -134,6 +139,32 @@ func parseArgs(args []string) (parsedArgs, error) {
 		return parsed, fmt.Errorf("the following arguments are required: --session")
 	}
 	return parsed, nil
+}
+
+// canonicalOption implements argparse's unambiguous long-option prefix
+// matching so accepted baseline syntax is not shrunk.
+func canonicalOption(arg string) (string, error) {
+	if !strings.HasPrefix(arg, "--") || arg == "--" {
+		return arg, nil
+	}
+	name, value, hasValue := strings.Cut(arg, "=")
+	options := []string{"--help", "--version", "--source", "--cwd", "--session"}
+	matches := []string{}
+	for _, option := range options {
+		if strings.HasPrefix(option, name) {
+			matches = append(matches, option)
+		}
+	}
+	if len(matches) == 1 {
+		if hasValue {
+			return matches[0] + "=" + value, nil
+		}
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("ambiguous option: %s", name)
+	}
+	return arg, nil
 }
 
 func flagValue(args []string, index int, name string) (string, int, error) {

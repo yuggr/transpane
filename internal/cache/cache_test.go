@@ -159,3 +159,27 @@ func indexOf(value, needle string) int {
 	}
 	return -1
 }
+
+func TestPythonCreatedDatabaseFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "compat", "python_cache.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "translations.sqlite3")
+	if err := os.WriteFile(path, raw, 0o600); err != nil { //nolint:gosec // test-controlled temp path
+		t.Fatal(err)
+	}
+	cache := Open(path)
+	defer func() { _ = cache.Close() }()
+	if !cache.Status().Available {
+		t.Fatalf("fixture disabled: %s", cache.Status().Message)
+	}
+	key := Key("http://127.0.0.1:1234/v1", "plamo-3-translate-2b", "polite", "hello")
+	if got, ok := cache.Get(key); !ok || got != "PYTHON" {
+		t.Fatalf("%q %v", got, ok)
+	}
+}
