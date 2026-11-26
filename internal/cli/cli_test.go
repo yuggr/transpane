@@ -182,6 +182,26 @@ func TestHelpVersionAndGrammar(t *testing.T) {
 	}
 }
 
+func TestSessionsStripsControlCharacters(t *testing.T) {
+	env := testEnv(t)
+	dir := filepath.Join(env["CODEX_HOME"], "sessions", "2026", "11", "25")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := codexMeta("t")
+	meta["payload"].(map[string]any)["cwd"] = "/tmp/\x1b]52;c;ZXZpbA==\x07x"
+	file, err := os.Create(filepath.Join(dir, "rollout-t.jsonl")) //nolint:gosec // test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.NewEncoder(file).Encode(meta)
+	_ = file.Close()
+	result := runApp(t, env, []string{"sessions"}, nil)
+	if result.code != 0 || strings.Contains(result.out, "\x1b]52") {
+		t.Fatalf("%+v", result)
+	}
+}
+
 func TestSessionsEmpty(t *testing.T) {
 	env := testEnv(t)
 	result := runApp(t, env, []string{"sessions"}, nil)

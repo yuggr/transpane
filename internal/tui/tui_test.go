@@ -160,6 +160,21 @@ func TestSKeyOpensPickerWithActiveSession(t *testing.T) {
 	}
 }
 
+func TestStatusAndPickerStripControlSequences(t *testing.T) {
+	app := newTestApp()
+	app.Update(statusMsg{status: monitor.Status{Session: "x\x1b]8;;http://evil\x07y", Note: "\x1b[31mred"}})
+	content := app.View().Content
+	if strings.Contains(content, "\x1b]8") || strings.Contains(content, "\x1b[31m") {
+		t.Fatalf("unsanitized status: %q", content)
+	}
+	cwd := "/tmp/\x1b]52;c;ZXZpbA==\x07x"
+	app.Update(sessionsMsg{sessions: []domain.SessionInfo{{ThreadID: "t", Provider: domain.ProviderCodex, Cwd: &cwd}}})
+	content = app.View().Content
+	if strings.Contains(content, "\x1b]52") {
+		t.Fatalf("unsanitized picker: %q", content)
+	}
+}
+
 func TestStatusNoteAndCacheNote(t *testing.T) {
 	app := newTestApp()
 	app.Update(statusMsg{status: monitor.Status{Server: "接続成功", Pending: 2, LastUpdate: "12:00:00", Note: "索引不一致", CacheNote: "locked", Session: "Codex / abc"}})

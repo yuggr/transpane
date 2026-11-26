@@ -456,7 +456,7 @@ func (a *App) statusText() string {
 	if a.session == nil && a.emptyNote != "" {
 		text += " | " + a.emptyNote
 	}
-	return text
+	return SanitizeForDisplay(text)
 }
 
 func (a *App) View() tea.View {
@@ -505,6 +505,7 @@ func (a *App) pickerView() string {
 		if session.OriginLabel() != "" {
 			row += "  " + session.OriginLabel()
 		}
+		row = SanitizeForDisplay(row)
 		if index == a.picker.selected {
 			row = "> " + row
 		} else {

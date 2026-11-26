@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"time"
 
 	"github.com/yuggr/transpane/internal/config"
@@ -25,9 +26,22 @@ func (a *App) runSessions(cfg config.Config, source *domain.Provider) int {
 		if session.Cwd != nil {
 			cwd = *session.Cwd
 		}
-		writef(a.stdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", session.Provider.Label(), session.ThreadID, updated, session.ModeLabel(), origin, cwd)
+		writef(a.stdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", session.Provider.Label(), printable(session.ThreadID), updated, printable(session.ModeLabel()), printable(origin), printable(cwd))
 	}
 	return ExitOK
+}
+
+// printable drops terminal control characters from metadata that originates in
+// transcript files, so CLI diagnostics cannot emit ANSI/OSC sequences.
+func printable(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		if r < 32 || (r >= 0x7f && r <= 0x9f) {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
 }
 
 func (a *App) runInspect(cfg config.Config, ref string, source *domain.Provider) int {
@@ -44,24 +58,24 @@ func (a *App) runInspect(cfg config.Config, ref string, source *domain.Provider)
 		return ExitFailure
 	}
 	writef(a.stdout(), "取得元: %s\n", session.Provider.Label())
-	writef(a.stdout(), "セッション: %s\n", session.ThreadID)
+	writef(a.stdout(), "セッション: %s\n", printable(session.ThreadID))
 	cwd := "-"
 	if session.Cwd != nil {
 		cwd = *session.Cwd
 	}
-	writef(a.stdout(), "cwd: %s\n", cwd)
+	writef(a.stdout(), "cwd: %s\n", printable(cwd))
 	version := "不明"
 	if session.CLIVersion != nil {
 		version = *session.CLIVersion
 	}
-	writef(a.stdout(), "version: %s\n", version)
+	writef(a.stdout(), "version: %s\n", printable(version))
 	mode := "未対応"
 	if result.HistoryMode != nil {
 		mode = *result.HistoryMode
 	}
-	writef(a.stdout(), "形式: %s\n", mode)
+	writef(a.stdout(), "形式: %s\n", printable(mode))
 	if result.UnsupportedMode != nil {
-		writef(a.stdout(), "未対応の history_mode: %s\n", *result.UnsupportedMode)
+		writef(a.stdout(), "未対応の history_mode: %s\n", printable(*result.UnsupportedMode))
 	}
 	if result.ThreadChanged != nil {
 		writeln(a.stdout(), "セッションID不一致を検出しました（本文は送信しません）")

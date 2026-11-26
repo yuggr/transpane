@@ -305,7 +305,7 @@ func TestMonitorTranslatesPreservesOrderAndFile(t *testing.T) {
 	}
 	after, _ := os.ReadFile(path) //nolint:gosec // test-controlled temp path
 	afterStat, _ := os.Stat(path)
-	if string(before) != string(after) || !beforeStat.ModTime().Equal(afterStat.ModTime()) {
+	if string(before) != string(after) || !beforeStat.ModTime().Equal(afterStat.ModTime()) || beforeStat.Mode() != afterStat.Mode() {
 		t.Fatal("transcript changed")
 	}
 }
