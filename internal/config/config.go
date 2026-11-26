@@ -154,16 +154,16 @@ func LoadFrom(env map[string]string, home string) (Config, error) {
 	if model == "" {
 		return Config{}, errorf("translation.model は必須です（/v1/models の実IDを設定してください）")
 	}
-	form := stringValue(translation, "form")
-	if form == "" {
-		form = DefaultForm
+	form := DefaultForm
+	if value, present := translation["form"]; present {
+		form = value.(string)
 	}
 	if !forms[form] {
 		return Config{}, errorf("translation.form は polite または plain を指定してください")
 	}
-	base := stringValue(translation, "base_url")
-	if base == "" {
-		base = DefaultBaseURL
+	base := DefaultBaseURL
+	if value, present := translation["base_url"]; present {
+		base = value.(string)
 	}
 	baseURL, err := ValidateBaseURL(base)
 	if err != nil {

@@ -101,3 +101,15 @@ func TestMissingConfigUsesDefaults(t *testing.T) {
 	}
 	_ = cfg
 }
+
+func TestEmptyStringValuesAreNotDefaults(t *testing.T) {
+	for _, body := range []string{
+		"[translation]\nmodel = \"m\"\nbase_url = \"\"\n",
+		"[translation]\nmodel = \"m\"\nform = \"\"\n",
+	} {
+		env, root := writeConfig(t, body)
+		if _, err := LoadFrom(env, root); err == nil {
+			t.Fatalf("empty value accepted: %q", body)
+		}
+	}
+}
