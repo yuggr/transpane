@@ -1,0 +1,10 @@
+[tools]
+go = "1.27.4"
+"golangci-lint" = "2.8.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "v1.1.4"
+
+[tasks.check]
+run = "go vet ./... && go test ./..."
+
+[tasks.build]
+run = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/transpane ./cmd/transpane"
