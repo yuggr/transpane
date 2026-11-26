@@ -243,3 +243,38 @@ aa8dd29 docs: correct final expected test count
 
 増分の大半は、ヘルパーの関数定義行と、責務ごとに分けた early return の記述である。
 主な変更は関数の抽出と移動であり、公開 API のシグネチャと意味は変えていない。
+
+## PR #4 レビュー対応（2026-11-26）
+
+PR #4 のレビュー指摘に基づき、以下の2件のみを修正した。追加の複雑度低減は行っていない。
+
+### P2-01 再構築時の note 更新順序
+
+- `Monitor._read_snapshot` を `_scan_snapshot`（scan・検証・索引設定）と
+  `_read_snapshot_messages`（メッセージ読取）に分割し、`_rebuild`（および `switch`）が
+  スキャン成功後・`read_messages` 前に `_note` を設定する基点の順序へ戻した。
+- `SnapshotOutcome` に `selected` を追加し、scan と read の間で対象エントリを保持する。
+  generation、停止状態、例外分類、再構築契約は変更していない。
+- 回帰テスト: `test_rebuild_sets_note_before_reading_messages`
+  （修正前コードで失敗することを確認済み）。
+
+### P2-02 doctor の root 状態重複取得
+
+- `_doctor_roots` が `(ok, claude_state)` を返し、`_doctor_claude_counts` がその結果を
+  受け取るように変更した。Claude root の `_root_state` は 1 回だけ取得する。
+- 診断の順序、表示文言、終了コード、短絡評価による診断省略禁止は変更していない。
+- 回帰テスト: `test_doctor_reads_each_root_state_once`、
+  `test_doctor_translation_runs_when_cache_unavailable`。
+
+### 検証（修正後）
+
+- `uv run pytest -q`: 217 passed（既存209 + 追加8）
+- `uv run ruff check src tests`: clean
+- `uv run ruff format --check src tests`: clean
+- `git diff --check`: clean
+- `omen complexity -p src -f json`: 関数256、cognitive 合計 846、p95 10、最大 15、
+  cognitive >10 の関数 10。
+
+>10 の関数数は設計 §7.2 の改善目標（9以下）を1件超過する。これは基点の note 順序へ
+戻した結果 `_rebuild` の cognitive が 12 から 13 へ増えたためであり、レビュー指示に従い
+数値合わせの追加分割は行っていない。
