@@ -58,6 +58,15 @@ func (l *testListener) Status(status Status) {
 	l.mu.Unlock()
 }
 
+func (l *testListener) lastStatus() Status {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.statuses) == 0 {
+		return Status{}
+	}
+	return l.statuses[len(l.statuses)-1]
+}
+
 func (l *testListener) noteSeen(part string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -70,21 +79,41 @@ func (l *testListener) noteSeen(part string) bool {
 }
 
 type fakeTransport struct {
-	mu       sync.Mutex
-	posts    int
-	gets     int
-	texts    []string
-	handler  func(text string) (status int, body string)
-	gate     chan struct{}
-	gateText string
-	started  chan string
+	mu         sync.Mutex
+	posts      int
+	gets       int
+	texts      []string
+	handler    func(text string) (status int, body string)
+	gate       chan struct{}
+	gateText   string
+	started    chan string
+	getGate    chan struct{}
+	getStarted chan struct{}
+	getDone    chan struct{}
+	getFail    bool
 }
 
 func (f *fakeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.Method == http.MethodGet {
 		f.mu.Lock()
 		f.gets++
+		started, gate, done, fail := f.getStarted, f.getGate, f.getDone, f.getFail
 		f.mu.Unlock()
+		if started != nil {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+		}
+		if gate != nil {
+			<-gate
+		}
+		if done != nil {
+			close(done)
+		}
+		if fail {
+			return response(500, "{}"), nil
+		}
 		return response(200, `{"data":[{"id":"m"}]}`), nil
 	}
 	raw, _ := io.ReadAll(request.Body)
@@ -559,6 +588,77 @@ startedB:
 	views := monitor.Views()
 	if len(views) != 1 || strings.Contains(views[0].DisplayText(), "Slow B") || !strings.Contains(views[0].DisplayText(), "A payload.") {
 		t.Fatalf("%+v", views)
+	}
+}
+
+func TestStaleReconnectResultIgnoredAfterSwitch(t *testing.T) {
+	cfg := testConfig(t)
+	readerA := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("a", fakeMessage("a", "a1", "Fail.")), nil },
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("a", "a1", "Fail.")}, nil
+		},
+	}
+	readerB := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("b", fakeMessage("b", "b1", "B payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("b", "b1", "B payload.")}, nil
+		},
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{handler: func(text string) (int, string) {
+		if strings.Contains(text, "Fail.") {
+			return 500, "{}"
+		}
+		return 200, ""
+	}}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client:       client,
+		PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(session domain.SessionInfo) reader {
+			if session.ThreadID == "a" {
+				return readerA
+			}
+			return readerB
+		},
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	sessionA := domain.SessionInfo{ThreadID: "a", Provider: domain.ProviderCodex}
+	sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+	monitor.Start(&sessionA)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].State == domain.TranslationStateFailed
+	})
+	fake.mu.Lock()
+	fake.getGate = make(chan struct{})
+	fake.getStarted = make(chan struct{}, 1)
+	fake.getDone = make(chan struct{})
+	fake.getFail = true
+	fake.mu.Unlock()
+	monitor.Retry()
+	select {
+	case <-fake.getStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not start")
+	}
+	monitor.Switch(sessionB)
+	close(fake.getGate)
+	select {
+	case <-fake.getDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not finish")
+	}
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views)
+	})
+	time.Sleep(50 * time.Millisecond)
+	if strings.Contains(listener.lastStatus().Note, "再接続") {
+		t.Fatalf("stale reconnect changed new session note: %+v", listener.lastStatus())
 	}
 }
 

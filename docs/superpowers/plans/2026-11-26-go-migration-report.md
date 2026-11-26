@@ -51,8 +51,8 @@ G01-G26:
 | G14 | PASS | Scheduler tests: one worker, active≤32, deferred FIFO, priority/sequence, requeue, accounting |
 | G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, and remaining-segment suppression |
 | G16 | PASS | Same ID across Codex/Claude, A→B→A, same-ID picker rows, stale in-flight B discarded |
-| G17 | PARTIAL | Old scan and old read results ignored (barrier tests); poll/reconnect stale combinations are implemented but not exhaustively interleaved |
-| G18 | PASS* | Denied/ID mismatch stop retained; explicit switch is the only recovery. Monitor ID-mismatch stop is covered via reader/contract tests |
+| G17 | PASS* | Old scan/read/poll results and reconnect results ignored after switch; remaining switch/rebuild index-mismatch/read-error combinations are covered but not exhaustively interleaved |
+| G18 | PASS | Denied and thread-change stop retained; retry/history blocked; explicit switch recovers |
 | G19 | PASS | Rebuild retry/history blocked, note→scan→read ordering, readback mismatch stop, stop reason retained |
 | G20 | PASS | Pause/reconnect rules, retained unsubmitted work, retry only failed units, 4xx vs 5xx classification |
 | G21 | PASS | CLI tests: doctor all diagnostics, root read once, no body/HTTP in sessions/inspect |

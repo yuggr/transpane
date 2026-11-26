@@ -93,12 +93,14 @@ type readerResponse struct {
 }
 
 type translationTask struct {
-	job       *Job
-	reconnect bool
+	job        *Job
+	reconnect  bool
+	generation uint64
 }
 
 type translationResponse struct {
 	job               *Job
+	generation        uint64
 	ok                bool
 	translated        string
 	errKind           string
@@ -392,6 +394,8 @@ func (m *Monitor) handleSwitch(request switchRequest) {
 	m.paused = false
 	m.connection = ConnectionUnknown
 	m.connectionError = ""
+	m.reconnecting = false
+	m.retryAfterReconnect = false
 	m.lastUpdate = time.Now().Format("15:04:05")
 	if m.readerFactory != nil {
 		m.reader = m.readerFactory(*request.session)
@@ -688,6 +692,9 @@ func (m *Monitor) resultView(ref domain.TaskRef) *View {
 }
 
 func (m *Monitor) handleReconnect(response translationResponse) {
+	if response.generation != m.generation {
+		return
+	}
 	m.reconnecting = false
 	if response.reconnectOK {
 		m.paused = false
@@ -761,7 +768,7 @@ func (m *Monitor) handleRetry() {
 		m.reconnecting = true
 		m.retryAfterReconnect = true
 		select {
-		case m.translationTasks <- translationTask{reconnect: true}:
+		case m.translationTasks <- translationTask{reconnect: true, generation: m.generation}:
 		case <-m.ctx.Done():
 		}
 		return
@@ -1059,7 +1066,7 @@ func (m *Monitor) translationLoop() {
 				ctx, cancel := context.WithTimeout(m.ctx, time.Duration(config.TotalTimeoutSeconds*float64(time.Second)))
 				_, err := m.client.ListModels(ctx)
 				cancel()
-				response := translationResponse{reconnect: true, reconnectOK: err == nil}
+				response := translationResponse{reconnect: true, generation: task.generation, reconnectOK: err == nil}
 				if err != nil {
 					var failure *translate.Failure
 					if errors.As(err, &failure) {

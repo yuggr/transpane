@@ -276,6 +276,102 @@ func TestCancelDuringCacheLookupDoesNotPostOldGeneration(t *testing.T) {
 	}
 }
 
+func TestOldPollResultIsIgnoredAfterSwitch(t *testing.T) {
+	cfg := testConfig(t)
+	pollEntered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	readerA := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("a", fakeMessage("a", "a1", "one")), nil },
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("a", "a1", "one")}, nil
+		},
+		pollFn: func(call int) transcript.PollResult {
+			if call == 1 {
+				pollEntered <- struct{}{}
+				<-release
+				message := fakeMessage("a", "a2", "stale poll")
+				return transcript.PollResult{Messages: []domain.Message{message}, Entries: []domain.IndexEntry{{ID: message.ID, Revision: message.Revision}}}
+			}
+			return transcript.PollResult{}
+		},
+	}
+	readerB := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("b", fakeMessage("b", "b1", "B payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("b", "b1", "B payload.")}, nil
+		},
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitorWithReaders(t, cfg, fake, listener, map[string]*scriptedReader{"a": readerA, "b": readerB})
+	sessionA := domain.SessionInfo{ThreadID: "a", Provider: domain.ProviderCodex}
+	sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+	monitor.Start(&sessionA)
+	select {
+	case <-pollEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("poll did not start")
+	}
+	doneB := make(chan struct{})
+	go func() { monitor.Switch(sessionB); close(doneB) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	select {
+	case <-doneB:
+	case <-time.After(3 * time.Second):
+		t.Fatal("switch B did not finish")
+	}
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.ID == "b1"
+	})
+	if len(monitor.Views()) != 1 {
+		t.Fatalf("stale poll applied: %+v", monitor.Views())
+	}
+}
+
+func TestThreadChangeStopsAndSwitchRecovers(t *testing.T) {
+	cfg := testConfig(t)
+	changed := "other"
+	readerA := &scriptedReader{scanFn: func(int) (transcript.ScanResult, error) {
+		result := fakeScan("a")
+		result.ThreadChanged = &changed
+		return result, nil
+	}}
+	readerB := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("b", fakeMessage("b", "b1", "B payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("b", "b1", "B payload.")}, nil
+		},
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitorWithReaders(t, cfg, fake, listener, map[string]*scriptedReader{"a": readerA, "b": readerB})
+	sessionA := domain.SessionInfo{ThreadID: "a", Provider: domain.ProviderCodex}
+	sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+	monitor.Start(&sessionA)
+	waitUntil(t, 3*time.Second, func() bool { return listener.noteSeen("セッションIDが変更されました") })
+	if len(monitor.Views()) != 0 {
+		t.Fatal("thread change retained views")
+	}
+	monitor.Retry()
+	monitor.AddHistory()
+	time.Sleep(50 * time.Millisecond)
+	scans, reads, _ := readerA.counts()
+	if scans != 1 || reads != 0 {
+		t.Fatalf("stopped session restarted: %d %d", scans, reads)
+	}
+	monitor.Switch(sessionB)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.ID == "b1" && allSettled(views)
+	})
+}
+
 func TestRebuildReadFailureStopsAndBlocksRetry(t *testing.T) {
 	cfg := testConfig(t)
 	reader := &scriptedReader{}
