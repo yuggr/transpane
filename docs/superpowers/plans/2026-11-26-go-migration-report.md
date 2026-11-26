@@ -49,7 +49,7 @@ G01-G26:
 | G12 | PASS* | Cache key Python goldens, perms/corrupt/lock/non-destructive; Go↔Python DB read verified manually (synthetic DB). Read-only DB case not separately automated. |
 | G13 | PASS | Scheduler tests: cache reuse, invalid marker not cached, memo, policy/model/form keys |
 | G14 | PASS | Scheduler tests: one worker, active≤32, deferred FIFO, priority/sequence, requeue, accounting |
-| G15 | PARTIAL | Deterministic cancel-before-POST and cancel-during-request are covered by scheduler/monitor tests; a blocked cache-lookup barrier is not separately automated |
+| G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, and remaining-segment suppression |
 | G16 | PASS | Same ID across Codex/Claude, A→B→A, same-ID picker rows, stale in-flight B discarded |
 | G17 | PARTIAL | Old scan and old read results ignored (barrier tests); poll/reconnect stale combinations are implemented but not exhaustively interleaved |
 | G18 | PASS* | Denied/ID mismatch stop retained; explicit switch is the only recovery. Monitor ID-mismatch stop is covered via reader/contract tests |

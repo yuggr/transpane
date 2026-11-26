@@ -2,10 +2,14 @@ package monitor
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	_ "modernc.org/sqlite"
+
+	"github.com/yuggr/transpane/internal/cache"
 	"github.com/yuggr/transpane/internal/config"
 	"github.com/yuggr/transpane/internal/domain"
 	"github.com/yuggr/transpane/internal/transcript"
@@ -189,6 +193,86 @@ func TestOldReadResultIsIgnoredAfterSwitch(t *testing.T) {
 	views := monitor.Views()
 	if len(views) != 1 || views[0].Message.ID != "b1" {
 		t.Fatalf("stale A read applied: %+v", views)
+	}
+}
+
+type blockingCache struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingCache) Get(string) (string, bool) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+	if call == 1 {
+		close(c.entered)
+		<-c.release
+	}
+	return "", false
+}
+func (c *blockingCache) Put(string, string, string) {}
+func (c *blockingCache) Status() cache.Status       { return cache.Status{Available: true} }
+func (c *blockingCache) Close() error               { return nil }
+
+func TestCancelDuringCacheLookupDoesNotPostOldGeneration(t *testing.T) {
+	cfg := testConfig(t)
+	readerA := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("a", fakeMessage("a", "a1", "Slow A payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("a", "a1", "Slow A payload.")}, nil
+		},
+	}
+	readerB := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("b", fakeMessage("b", "b1", "B payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("b", "b1", "B payload.")}, nil
+		},
+	}
+	blocking := &blockingCache{entered: make(chan struct{}), release: make(chan struct{})}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client:       client,
+		Cache:        blocking,
+		PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(session domain.SessionInfo) reader {
+			if session.ThreadID == "a" {
+				return readerA
+			}
+			return readerB
+		},
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	sessionA := domain.SessionInfo{ThreadID: "a", Provider: domain.ProviderCodex}
+	sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+	monitor.Start(&sessionA)
+	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cache lookup did not start")
+	}
+	monitor.Switch(sessionB)
+	close(blocking.release)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.ID == "b1" && allSettled(views)
+	})
+	fake.mu.Lock()
+	texts := append([]string(nil), fake.texts...)
+	fake.mu.Unlock()
+	for _, text := range texts {
+		if strings.Contains(text, "Slow A") {
+			t.Fatalf("old generation POSTed after cancel: %v", texts)
+		}
 	}
 }
 

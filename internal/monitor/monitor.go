@@ -39,10 +39,18 @@ type Listener interface {
 // Options injects test doubles and tuning values.
 type Options struct {
 	Client        *translate.Client
-	Cache         *cache.Cache
+	Cache         segmentCache
 	SchedulerMax  int
 	PollInterval  time.Duration
 	ReaderFactory func(domain.SessionInfo) reader
+}
+
+// segmentCache is the subset of the SQLite cache used by the worker.
+type segmentCache interface {
+	Get(string) (string, bool)
+	Put(string, string, string)
+	Status() cache.Status
+	Close() error
 }
 
 // reader is the bounded transcript reader used by the monitor. The concrete
@@ -116,7 +124,7 @@ type Monitor struct {
 	workers              sync.WaitGroup
 
 	client        *translate.Client
-	cache         *cache.Cache
+	cache         segmentCache
 	readerFactory func(domain.SessionInfo) reader
 
 	currentGeneration atomic.Uint64
