@@ -26,6 +26,7 @@ from support import (
 )
 from transpane.models import AgentProvider, TranslationState
 from transpane.session import (
+    SessionIndexMismatch,
     SessionReader,
     SessionReadError,
     discover_all_sessions,
@@ -998,4 +999,133 @@ async def test_monitor_denied_path_cancels_pending_translation(tmp_path):
     assert len(calls) == 1
     assert "訳:late" not in view.display_text()
     assert view.state is not TranslationState.TRANSLATED
+    await monitor.close()
+
+
+async def test_switch_index_mismatch_rebuilds_instead_of_stopping(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    write_claude_session(config.claude_projects_root, CLAUDE_ID, [claude_user(CLAUDE_ID, "hello")])
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    original = SessionReader.read_messages
+    calls = {"count": 0}
+
+    def mismatch_once(self, entries):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise SessionIndexMismatch()
+        return original(self, entries)
+
+    monkeypatch.setattr(SessionReader, "read_messages", mismatch_once)
+    listener = FakeListener()
+    monitor = Monitor(config, listener, transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    assert monitor._note is not None and "索引不一致" in monitor._note
+    assert not monitor._stopped
+    assert calls["count"] >= 2
+    assert not any("対象イベント未検出" in (status.note or "") for status in listener.statuses)
+    await monitor.close()
+
+
+async def test_rebuild_sets_note_before_reading_messages(tmp_path):
+    config = make_config(tmp_path)
+    records = [
+        claude_agent(
+            CLAUDE_ID,
+            f"Message {index}.",
+            uuid=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(3)
+    ]
+    write_claude_session(config.claude_projects_root, CLAUDE_ID, records)
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    await wait_until(lambda: len(monitor.views) == 3)
+    if monitor._poll_task is not None:
+        monitor._poll_task.cancel()
+        monitor._poll_task = None
+    assert monitor._reader is not None
+    seen: dict[str, str | None] = {}
+    read_messages = monitor._reader.read_messages
+
+    def record_note(entries):
+        seen["note"] = monitor._note
+        return read_messages(entries)
+
+    monitor._reader.read_messages = record_note
+    await monitor._rebuild(monitor._generation, note="再構築テスト")
+    assert seen["note"] == "再構築テスト"
+    assert monitor._note == "再構築テスト"
+    await monitor.close()
+
+
+@pytest.mark.parametrize(
+    ("failure", "trigger"),
+    [("read_error", "switch"), ("index_mismatch", "rebuild")],
+)
+async def test_stale_read_failure_does_not_stop_new_session(
+    tmp_path, monkeypatch, failure, trigger
+):
+    config = make_config(tmp_path)
+    other_id = "22222222-2222-4222-8222-222222222222"
+    write_claude_session(config.claude_projects_root, CLAUDE_ID, [claude_user(CLAUDE_ID, "old")])
+    write_claude_session(config.claude_projects_root, other_id, [claude_user(other_id, "new")])
+    sessions = discover_all_sessions(
+        config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+    )
+    old_session = select_session(sessions, CLAUDE_ID)
+    new_session = select_session(sessions, other_id)
+
+    original = SessionReader.read_messages
+    gate: dict[str, object] = {
+        "armed": False,
+        "blocked": threading.Event(),
+        "release": threading.Event(),
+    }
+
+    def controlled(self, entries):
+        if gate["armed"]:
+            gate["armed"] = False
+            gate["blocked"].set()
+            gate["release"].wait(5)
+            if failure == "index_mismatch":
+                raise SessionIndexMismatch()
+            raise SessionReadError("read")
+        return original(self, entries)
+
+    monkeypatch.setattr(SessionReader, "read_messages", controlled)
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    if trigger == "switch":
+        gate["armed"] = True
+        old_task = asyncio.create_task(monitor.start(old_session))
+    else:
+        await monitor.start(old_session)
+        if monitor._poll_task is not None:
+            monitor._poll_task.cancel()
+            monitor._poll_task = None
+        gate["armed"] = True
+        old_task = asyncio.create_task(monitor._rebuild(monitor._generation))
+
+    await wait_until(lambda: gate["blocked"].is_set())
+    await monitor.switch(new_session)
+    assert monitor.session is new_session
+    assert len(monitor.views) == 1
+
+    gate["release"].set()
+    await old_task
+
+    assert not monitor._stopped
+    assert monitor.session is new_session
+    assert monitor._poll_task is not None
+    assert monitor._note is None
     await monitor.close()

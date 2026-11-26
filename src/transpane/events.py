@@ -82,49 +82,48 @@ class Extractor:
         self.mode = mode
 
     def extract(self, record: dict[str, Any], offset: int) -> ExtractResult:
-        record_type = record.get("type")
-        payload = _as_dict(record.get("payload"))
+        if record.get("type") != "event_msg":
+            return ExtractResult(reason="not_allowed")
+        result = self._extract_event_msg(_as_dict(record.get("payload")), record, offset)
+        return result if result is not None else ExtractResult(reason="not_allowed")
 
-        if record_type == "event_msg":
-            payload_type = payload.get("type")
+    def _extract_event_msg(
+        self, payload: dict[str, Any], record: dict[str, Any], offset: int
+    ) -> ExtractResult | None:
+        payload_type = payload.get("type")
 
-            if payload_type == "item_completed":
-                item = payload.get("item")
-                if isinstance(item, dict):
-                    result = self._extract_item(item, record, offset)
-                    if result is not None:
-                        return result
-                return ExtractResult(reason="not_allowed")
+        if payload_type == "item_completed":
+            item = payload.get("item")
+            if isinstance(item, dict):
+                result = self._extract_item(item, record, offset)
+                if result is not None:
+                    return result
+            return ExtractResult(reason="not_allowed")
 
-            if self.mode is HistoryMode.LEGACY:
-                if payload_type == "user_message":
-                    return self._from_text(payload.get("message"), MessageKind.USER, record, offset)
-                if payload_type == "agent_message":
-                    return self._from_text(
-                        payload.get("message"),
-                        kind_for_phase(payload.get("phase")),
-                        record,
-                        offset,
-                    )
+        if self.mode is HistoryMode.LEGACY:
+            if payload_type == "user_message":
+                return self._from_text(payload.get("message"), MessageKind.USER, record, offset)
+            if payload_type == "agent_message":
+                return self._from_text(
+                    payload.get("message"),
+                    kind_for_phase(payload.get("phase")),
+                    record,
+                    offset,
+                )
 
-        return ExtractResult(reason="not_allowed")
+        return None
 
     def _extract_item(
         self, item: dict[str, Any], record: dict[str, Any], offset: int
     ) -> ExtractResult | None:
-        item_type = item.get("type")
-
-        if item_type == "Plan":
-            text = item.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return ExtractResult(reason="empty")
-            message_id = item.get("id")
-            if not isinstance(message_id, str) or not message_id:
-                message_id = f"{self.thread_id}:{offset}"
-            return ExtractResult(self._build(message_id, text, MessageKind.PLAN, record, offset))
+        plan = self._extract_plan_item(item, record, offset)
+        if plan is not None:
+            return plan
 
         if self.mode is not HistoryMode.PAGINATED:
             return None
+
+        item_type = item.get("type")
 
         if item_type == "UserMessage":
             text = _join_content(item.get("content"), "text")
@@ -141,6 +140,19 @@ class Extractor:
         if not text.strip():
             return ExtractResult(reason="empty")
         return ExtractResult(self._build(message_id, text, kind, record, offset))
+
+    def _extract_plan_item(
+        self, item: dict[str, Any], record: dict[str, Any], offset: int
+    ) -> ExtractResult | None:
+        if item.get("type") != "Plan":
+            return None
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return ExtractResult(reason="empty")
+        message_id = item.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            message_id = f"{self.thread_id}:{offset}"
+        return ExtractResult(self._build(message_id, text, MessageKind.PLAN, record, offset))
 
     def _from_text(
         self, text: Any, kind: MessageKind, record: dict[str, Any], offset: int
@@ -210,6 +222,32 @@ def _excluded_by_flag(record: dict[str, Any]) -> bool:
     return False
 
 
+def _block_text(block: object, ignored_blocks: frozenset[str]) -> tuple[bool, str | None]:
+    """Accept a content block and return its text, ``None`` for ignored blocks."""
+    if not isinstance(block, dict):
+        return False, None
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text")
+        if not isinstance(text, str):
+            return False, None
+        return True, text if text.strip() else None
+    if block_type in ignored_blocks:
+        return True, None
+    return False, None
+
+
+def _texts_from_blocks(blocks: list, ignored_blocks: frozenset[str]) -> list[str] | None:
+    texts: list[str] = []
+    for block in blocks:
+        accepted, text = _block_text(block, ignored_blocks)
+        if not accepted:
+            return None
+        if text is not None:
+            texts.append(text)
+    return texts
+
+
 def _content_text(
     content: Any,
     ignored_blocks: frozenset[str],
@@ -221,21 +259,9 @@ def _content_text(
             return None
         texts = [content]
     elif isinstance(content, list):
-        texts = []
-        for block in content:
-            if not isinstance(block, dict):
-                return None
-            block_type = block.get("type")
-            if block_type == "text":
-                text = block.get("text")
-                if not isinstance(text, str):
-                    return None
-                if text.strip():
-                    texts.append(text)
-            elif block_type in ignored_blocks:
-                continue
-            else:
-                return None
+        texts = _texts_from_blocks(content, ignored_blocks)
+        if texts is None:
+            return None
     else:
         return None
     if _contains_internal_tag(texts):
@@ -250,39 +276,13 @@ class ClaudeExtractor:
         self.thread_id = thread_id
 
     def extract(self, record: dict[str, Any], offset: int) -> ExtractResult:
-        record_type = record.get("type")
-        if record_type not in ("user", "assistant"):
-            return ExtractResult(reason="not_allowed")
-        # Internal/excluded records must not be mistaken for a session change.
-        if _excluded_by_flag(record):
-            return ExtractResult(reason="excluded")
+        reason, message = self._validate_claude_record(record)
+        if reason is not None:
+            return ExtractResult(reason=reason)
+        assert message is not None
 
-        session_id = record.get("sessionId")
-        if not isinstance(session_id, str) or not session_id:
-            return ExtractResult(reason="not_allowed")
-        if session_id != self.thread_id:
-            return ExtractResult(reason="thread_mismatch")
-
-        message_id = record.get("uuid")
-        if not isinstance(message_id, str) or not message_id:
-            return ExtractResult(reason="missing_id")
-
-        message = record.get("message")
-        if not isinstance(message, dict):
-            return ExtractResult(reason="bad_payload")
-        if message.get("role") != record_type:
-            return ExtractResult(reason="role_mismatch")
-        if message.get("model") == _CLAUDE_SYNTHETIC_MODEL:
-            return ExtractResult(reason="synthetic")
-
-        content = message.get("content")
-        if record_type == "user":
-            if record.get("toolUseResult") is not None:
-                return ExtractResult(reason="excluded")
-            text = _content_text(content, _CLAUDE_IGNORED_USER_BLOCKS, allow_string=True)
-        else:
-            text = _content_text(content, _CLAUDE_HIDDEN_ASSISTANT_BLOCKS, allow_string=False)
-
+        record_type = record["type"]
+        text = self._claude_text(record_type, message.get("content"))
         if text is None:
             return ExtractResult(reason="excluded")
         if not text.strip():
@@ -291,7 +291,7 @@ class ClaudeExtractor:
         return ExtractResult(
             Message(
                 thread_id=self.thread_id,
-                message_id=message_id,
+                message_id=record["uuid"],
                 revision=make_revision(text),
                 sequence=offset,
                 timestamp=_timestamp(record),
@@ -299,3 +299,41 @@ class ClaudeExtractor:
                 original=text,
             )
         )
+
+    def _validate_claude_record(
+        self, record: dict[str, Any]
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        record_type = record.get("type")
+        if record_type not in ("user", "assistant"):
+            return "not_allowed", None
+        # Internal/excluded records must not be mistaken for a session change.
+        if _excluded_by_flag(record):
+            return "excluded", None
+
+        session_id = record.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            return "not_allowed", None
+        if session_id != self.thread_id:
+            return "thread_mismatch", None
+
+        message_id = record.get("uuid")
+        if not isinstance(message_id, str) or not message_id:
+            return "missing_id", None
+
+        message = record.get("message")
+        if not isinstance(message, dict):
+            return "bad_payload", None
+        if message.get("role") != record_type:
+            return "role_mismatch", None
+        if message.get("model") == _CLAUDE_SYNTHETIC_MODEL:
+            return "synthetic", None
+
+        if record_type == "user" and record.get("toolUseResult") is not None:
+            return "excluded", None
+
+        return None, message
+
+    def _claude_text(self, record_type: str, content: Any) -> str | None:
+        if record_type == "user":
+            return _content_text(content, _CLAUDE_IGNORED_USER_BLOCKS, allow_string=True)
+        return _content_text(content, _CLAUDE_HIDDEN_ASSISTANT_BLOCKS, allow_string=False)

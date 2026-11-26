@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from .config import MAX_SEGMENT_CHARS
 
@@ -125,6 +126,70 @@ def _new_markdown() -> MarkdownIt:
 _MARKDOWN = _new_markdown()
 
 
+def _container_depth(stack: list[str]) -> int:
+    return sum(1 for name in stack if name in ("list_item_open", "blockquote_open"))
+
+
+def _is_single_line_block(block_map: tuple[int, int] | None) -> bool:
+    return block_map is not None and block_map[1] - block_map[0] == 1
+
+
+def _heading_allowed(token: Token, stack: list[str]) -> bool:
+    markup = token.markup
+    return _container_depth(stack) == 0 and isinstance(markup, str) and markup.startswith("#")
+
+
+def _paragraph_container(stack: list[str]) -> str:
+    if "list_item_open" in stack:
+        return "list_item"
+    if "blockquote_open" in stack:
+        return "blockquote"
+    return "paragraph"
+
+
+def _record_allowed(allowed: dict[int, str], token: Token, stack: list[str]) -> None:
+    block_map = token.map
+    if block_map is None or not _is_single_line_block(block_map):
+        return
+    line_index = block_map[0]
+    if token.type == "heading_open":
+        if _heading_allowed(token, stack):
+            allowed[line_index] = "heading"
+        return
+    if token.type == "paragraph_open" and _container_depth(stack) <= 1:
+        allowed[line_index] = _paragraph_container(stack)
+
+
+def _has_nested_item(list_items: list[tuple[int, int]], index: int) -> bool:
+    start, end = list_items[index]
+    for other_index, (other_start, other_end) in enumerate(list_items):
+        if other_index == index:
+            continue
+        contained = start <= other_start and other_end <= end
+        if contained and (start, end) != (other_start, other_end):
+            return True
+    return False
+
+
+def _nested_list_ranges(tokens: list[Token]) -> list[tuple[int, int]]:
+    list_items = [
+        (token.map[0], token.map[1])
+        for token in tokens
+        if token.type == "list_item_open" and token.map is not None
+    ]
+    return [
+        item
+        for item_index, item in enumerate(list_items)
+        if _has_nested_item(list_items, item_index)
+    ]
+
+
+def _drop_allowed_ranges(allowed: dict[int, str], ranges: list[tuple[int, int]]) -> None:
+    for start, end in ranges:
+        for line_index in range(start, end):
+            allowed.pop(line_index, None)
+
+
 def _allowed_lines(source: str) -> dict[int, str]:
     """Map line index to a container kind for blocks we are willing to translate."""
     try:
@@ -136,53 +201,12 @@ def _allowed_lines(source: str) -> dict[int, str]:
     allowed: dict[int, str] = {}
     for token in tokens:
         if token.nesting == 1:
-            container_depth = sum(
-                1 for name in stack if name in ("list_item_open", "blockquote_open")
-            )
-            block_map = token.map
-            if token.type == "heading_open":
-                if (
-                    block_map is not None
-                    and block_map[1] - block_map[0] == 1
-                    and container_depth == 0
-                    and isinstance(token.markup, str)
-                    and token.markup.startswith("#")
-                ):
-                    allowed[block_map[0]] = "heading"
-            elif (
-                token.type == "paragraph_open"
-                and block_map is not None
-                and block_map[1] - block_map[0] == 1
-                and container_depth <= 1
-            ):
-                if "list_item_open" in stack:
-                    allowed[block_map[0]] = "list_item"
-                elif "blockquote_open" in stack:
-                    allowed[block_map[0]] = "blockquote"
-                else:
-                    allowed[block_map[0]] = "paragraph"
+            _record_allowed(allowed, token, stack)
             stack.append(token.type)
         elif token.nesting == -1 and stack:
             stack.pop()
 
-    list_items = [
-        (token.map[0], token.map[1])
-        for token in tokens
-        if token.type == "list_item_open" and token.map is not None
-    ]
-    complex_ranges: list[tuple[int, int]] = []
-    for index, (start, end) in enumerate(list_items):
-        for other_index, (other_start, other_end) in enumerate(list_items):
-            if index == other_index:
-                continue
-            contains_other = start <= other_start and other_end <= end
-            if contains_other and (start, end) != (other_start, other_end):
-                complex_ranges.append((start, end))
-                break
-    for start, end in complex_ranges:
-        for line_index in range(start, end):
-            allowed.pop(line_index, None)
-
+    _drop_allowed_ranges(allowed, _nested_list_ranges(tokens))
     return allowed
 
 
@@ -276,6 +300,37 @@ def _inside_marker(text: str, index: int, spans: list[tuple[int, int]]) -> bool:
     return any(start < index < end for start, end in spans)
 
 
+def _find_punctuation_cut(
+    text: str, start: int, window_end: int, marker_spans: list[tuple[int, int]]
+) -> int | None:
+    for index in range(window_end, start, -1):
+        if _inside_marker(text, index, marker_spans):
+            continue
+        if text[index - 1] in ".!?;:," and index < len(text) and text[index] in " \t":
+            return index
+    return None
+
+
+def _find_whitespace_cut(
+    text: str, start: int, window_end: int, marker_spans: list[tuple[int, int]]
+) -> int | None:
+    for index in range(window_end, start, -1):
+        if _inside_marker(text, index, marker_spans):
+            continue
+        if text[index] in " \t":
+            return index
+    return None
+
+
+def _find_cut(
+    text: str, start: int, window_end: int, marker_spans: list[tuple[int, int]]
+) -> int | None:
+    cut = _find_punctuation_cut(text, start, window_end, marker_spans)
+    if cut is not None:
+        return cut
+    return _find_whitespace_cut(text, start, window_end, marker_spans)
+
+
 def split_protected(text: str, limit: int = MAX_SEGMENT_CHARS) -> list[tuple[str, str]] | None:
     """Split protected text into <= limit chunks without cutting markers.
 
@@ -290,20 +345,7 @@ def split_protected(text: str, limit: int = MAX_SEGMENT_CHARS) -> list[tuple[str
     start = 0
     while len(text) - start > limit:
         window_end = start + limit
-        cut = None
-        for index in range(window_end, start, -1):
-            if _inside_marker(text, index, marker_spans):
-                continue
-            if text[index - 1] in ".!?;:," and index < len(text) and text[index] in " \t":
-                cut = index
-                break
-        if cut is None:
-            for index in range(window_end, start, -1):
-                if _inside_marker(text, index, marker_spans):
-                    continue
-                if text[index] in " \t":
-                    cut = index
-                    break
+        cut = _find_cut(text, start, window_end, marker_spans)
         if cut is None or cut <= start:
             return None
 
@@ -318,6 +360,29 @@ def split_protected(text: str, limit: int = MAX_SEGMENT_CHARS) -> list[tuple[str
     if any(not piece for piece, _ in pieces):
         return None
     return pieces
+
+
+def _protect_core(core: str) -> tuple[str | None, bool, tuple[Segment, ...], tuple[str, ...]]:
+    skip_reason = _classify_skip(core)
+    if skip_reason is not None:
+        return skip_reason, False, (), ()
+    protected, values = _protect_inline(core)
+    if protected is None:
+        return "marker_collision", True, (), ()
+    if not _ASCII_LETTER_RE.search(_MARKER_RE.sub("", protected)):
+        return "inline_only", False, (), ()
+    pieces = split_protected(protected)
+    if pieces is None:
+        return "long_unsplittable", True, (), ()
+    segments = tuple(
+        Segment(
+            text=piece,
+            markers=tuple(_MARKER_RE.findall(piece)),
+            trailing=trailing,
+        )
+        for piece, trailing in pieces
+    )
+    return None, False, segments, tuple(values)
 
 
 def protect_document(source: str) -> ProtectedDoc:
@@ -336,32 +401,7 @@ def protect_document(source: str) -> ProtectedDoc:
         if not core.strip():
             continue
         unit_id = len(units)
-        skip_reason = _classify_skip(core)
-        conservative = False
-        segments: tuple[Segment, ...] = ()
-        markers: tuple[str, ...] = ()
-
-        if skip_reason is None:
-            protected, values = _protect_inline(core)
-            if protected is None:
-                skip_reason, conservative = "marker_collision", True
-            elif not _ASCII_LETTER_RE.search(_MARKER_RE.sub("", protected)):
-                skip_reason = "inline_only"
-            else:
-                pieces = split_protected(protected)
-                if pieces is None:
-                    skip_reason, conservative = "long_unsplittable", True
-                else:
-                    segments = tuple(
-                        Segment(
-                            text=piece,
-                            markers=tuple(_MARKER_RE.findall(piece)),
-                            trailing=trailing,
-                        )
-                        for piece, trailing in pieces
-                    )
-                    markers = tuple(values)
-
+        skip_reason, conservative, segments, markers = _protect_core(core)
         units.append(
             Unit(
                 unit_id=unit_id,

@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 from .models import AgentProvider, SessionInfo
 
@@ -17,6 +18,48 @@ _UUID_RE = re.compile(
 )
 
 
+def _is_contained(path: Path, root_real: Path) -> bool:
+    """Return whether ``path`` resolves inside ``root_real``."""
+    try:
+        path.resolve().relative_to(root_real)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _is_transcript_child(path: Path, root_real: Path) -> bool:
+    """Return whether ``path`` is a contained regular ``<uuid>.jsonl`` file."""
+    if path.suffix != ".jsonl" or not _UUID_RE.match(path.stem):
+        return False
+    if path.is_symlink() or not path.is_file():
+        return False
+    return _is_contained(path, root_real)
+
+
+def _iter_project_transcripts(project: Path, root_real: Path) -> Iterator[Path]:
+    """Yield eligible ``<uuid>.jsonl`` children of one validated project directory."""
+    try:
+        children = sorted(project.iterdir())
+    except OSError:
+        return
+    for path in children:
+        if _is_transcript_child(path, root_real):
+            yield path
+
+
+def _iter_projects(projects_root: Path, root_real: Path) -> Iterator[Path]:
+    """Yield sorted direct project directories contained in the resolved root."""
+    try:
+        projects = sorted(projects_root.iterdir())
+    except OSError:
+        return
+    for project in projects:
+        if project.is_symlink() or not project.is_dir():
+            continue
+        if _is_contained(project, root_real):
+            yield project
+
+
 def iter_claude_files(projects_root: Path) -> Iterator[Path]:
     """Yield only direct ``<project>/<uuid>.jsonl`` regular files."""
     if not projects_root.is_dir():
@@ -25,82 +68,91 @@ def iter_claude_files(projects_root: Path) -> Iterator[Path]:
         root_real = projects_root.resolve()
     except OSError:
         return
-    try:
-        projects = sorted(projects_root.iterdir())
-    except OSError:
-        return
+    for project in _iter_projects(projects_root, root_real):
+        yield from _iter_project_transcripts(project, root_real)
 
-    for project in projects:
-        if project.is_symlink() or not project.is_dir():
-            continue
-        try:
-            project.resolve().relative_to(root_real)
-        except (OSError, ValueError):
-            continue
-        try:
-            children = sorted(project.iterdir())
-        except OSError:
-            continue
-        for path in children:
-            if path.suffix != ".jsonl" or not _UUID_RE.match(path.stem):
-                continue
-            if path.is_symlink() or not path.is_file():
-                continue
-            try:
-                path.resolve().relative_to(root_real)
-            except (OSError, ValueError):
-                continue
-            yield path
+
+def _read_head_chunk(handle: BinaryIO, limit: int, consumed: int) -> tuple[bytes | None, int, int]:
+    """Read one bounded chunk; ``None`` bytes means EOF."""
+    chunk_size = min(256 * 1024, limit - consumed)
+    chunk = handle.readline(chunk_size)
+    if not chunk:
+        return None, consumed, chunk_size
+    return chunk, consumed + len(chunk), chunk_size
+
+
+def _read_head_line(handle: BinaryIO, limit: int, consumed: int) -> tuple[bytes | None, int]:
+    """Read one complete line within the byte budget; a ``None`` line means stop."""
+    buffer = b""
+    while consumed < limit:
+        chunk, consumed, chunk_size = _read_head_chunk(handle, limit, consumed)
+        if chunk is None:
+            return None, consumed
+        buffer += chunk
+        if buffer.endswith(b"\n"):
+            return buffer, consumed
+        if len(chunk) < chunk_size:
+            return None, consumed
+    return None, consumed
+
+
+def _iter_complete_lines(handle: BinaryIO, limit: int) -> Iterator[bytes]:
+    """Yield complete lines from ``handle`` while staying within ``limit`` bytes."""
+    consumed = 0
+    while consumed < limit:
+        line, consumed = _read_head_line(handle, limit, consumed)
+        if line is None:
+            return
+        yield line
 
 
 def _iter_head_lines(path: Path, limit: int) -> Iterator[bytes]:
     """Yield complete lines from the head of a file, bounded by ``limit`` bytes."""
-    consumed = 0
-    buffer = b""
     try:
         with path.open("rb") as handle:
-            while consumed < limit:
-                chunk_size = min(256 * 1024, limit - consumed)
-                chunk = handle.readline(chunk_size)
-                if not chunk:
-                    return
-                consumed += len(chunk)
-                buffer += chunk
-                if buffer.endswith(b"\n"):
-                    yield buffer
-                    buffer = b""
-                    continue
-                if len(chunk) < chunk_size:
-                    return
+            yield from _iter_complete_lines(handle, limit)
     except OSError:
         return
+
+
+def _is_eligible_record(record: dict, stem: str) -> bool:
+    """Return whether ``record`` carries the confirmed session metadata."""
+    if record.get("type") not in ("user", "assistant"):
+        return False
+    if record.get("sessionId") != stem:
+        return False
+    sidechain = record.get("isSidechain")
+    if isinstance(sidechain, bool) and sidechain:
+        return False
+    return "isSidechain" not in record or isinstance(sidechain, bool)
+
+
+def _meta_values(record: dict) -> tuple[str | None, str | None]:
+    """Normalize the ``cwd`` and ``version`` fields of an eligible record."""
+    cwd = record.get("cwd")
+    cli_version = record.get("version")
+    return (
+        cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None,
+        cli_version if isinstance(cli_version, str) else None,
+    )
+
+
+def _parse_head_record(line: bytes) -> dict | None:
+    """Decode one JSONL line, returning ``None`` for unreadable non-objects."""
+    try:
+        record = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
 def read_claude_meta(path: Path) -> tuple[str | None, str | None] | None:
     """Confirm the session ID from the first eligible record and read its metadata."""
     for line in _iter_head_lines(path, META_READ_LIMIT):
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        record = _parse_head_record(line)
+        if record is None or not _is_eligible_record(record, path.stem):
             continue
-        if not isinstance(record, dict):
-            continue
-        if record.get("type") not in ("user", "assistant"):
-            continue
-        if record.get("sessionId") != path.stem:
-            continue
-        sidechain = record.get("isSidechain")
-        if isinstance(sidechain, bool) and sidechain:
-            continue
-        if "isSidechain" in record and not isinstance(sidechain, bool):
-            continue
-
-        cwd = record.get("cwd")
-        cli_version = record.get("version")
-        return (
-            cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None,
-            cli_version if isinstance(cli_version, str) else None,
-        )
+        return _meta_values(record)
     return None
 
 

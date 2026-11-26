@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 import httpx
 
@@ -123,19 +124,24 @@ class TranslationClient:
             ],
             "stream": False,
         }
-        try:
-            response = await self._http.post(f"{self._base_url}/chat/completions", json=payload)
-        except httpx.TimeoutException as exc:
-            raise TranslationFailure(ErrorKind.TIMEOUT) from exc
-        except httpx.HTTPError as exc:
-            raise TranslationFailure(ErrorKind.CONNECT) from exc
-
+        response = await self._post_completion(payload)
         if not 200 <= response.status_code < 300:
             raise TranslationFailure(ErrorKind.HTTP, response.status_code)
         try:
             body = response.json()
         except ValueError as exc:
             raise TranslationFailure(ErrorKind.INVALID) from exc
+        return self._parse_completion(body)
+
+    async def _post_completion(self, payload: dict) -> httpx.Response:
+        try:
+            return await self._http.post(f"{self._base_url}/chat/completions", json=payload)
+        except httpx.TimeoutException as exc:
+            raise TranslationFailure(ErrorKind.TIMEOUT) from exc
+        except httpx.HTTPError as exc:
+            raise TranslationFailure(ErrorKind.CONNECT) from exc
+
+    def _parse_completion(self, body: Any) -> str:
         if not isinstance(body, dict):
             raise TranslationFailure(ErrorKind.INVALID)
         choices = body.get("choices")
@@ -303,38 +309,47 @@ class TranslationScheduler:
 
     async def run(self) -> None:
         while not self._closed:
+            task = await self._next_task_or_wait()
+            if task is None:
+                break
+            await self._process_task(task)
+
+    async def _next_task_or_wait(self) -> _UnitTask | None:
+        while not self._closed:
             if self._paused:
                 self._wake.clear()
                 await self._wake.wait()
                 continue
             task = self._pop_task()
-            if task is None:
-                self._wake.clear()
-                if self._queue or self._deferred:
-                    continue
-                await self._wake.wait()
+            if task is not None:
+                return task
+            self._wake.clear()
+            if self._queue or self._deferred:
                 continue
+            await self._wake.wait()
+        return None
 
-            if task.ref.generation <= self._cancelled_through:
-                self._finish_task(task, cancelled=True)
-                continue
+    async def _process_task(self, task: _UnitTask) -> None:
+        if task.ref.generation <= self._cancelled_through:
+            self._finish_task(task, cancelled=True)
+            return
 
-            ok, translated, error = await self._translate_segment(task)
-            task.results.append((ok, translated, error))
-            task.next_index += 1
+        ok, translated, error = await self._translate_segment(task)
+        task.results.append((ok, translated, error))
+        task.next_index += 1
 
-            if task.ref.generation <= self._cancelled_through:
-                task.results[-1] = (False, None, ErrorKind.CANCELLED.value)
-                task.next_index = len(task.segments)
-                self._deliver(task)
-                continue
-
-            if task.next_index < len(task.segments):
-                heapq.heappush(self._queue, (task.priority, task.sequence, task))
-                self._wake.set()
-                continue
-
+        if task.ref.generation <= self._cancelled_through:
+            task.results[-1] = (False, None, ErrorKind.CANCELLED.value)
+            task.next_index = len(task.segments)
             self._deliver(task)
+            return
+
+        if task.next_index < len(task.segments):
+            heapq.heappush(self._queue, (task.priority, task.sequence, task))
+            self._wake.set()
+            return
+
+        self._deliver(task)
 
     async def close(self) -> None:
         self._closed = True

@@ -107,64 +107,74 @@ def _print_root(label: str, state: str, required: bool) -> None:
         print(f"  [WARN] {_ROOT_MESSAGES[state]} ({label}: この取得元は利用できません)")
 
 
+def _doctor_roots(config: Config, source: AgentProvider | None) -> tuple[bool, str]:
+    codex_state = _root_state(config.sessions_root)
+    claude_state = _root_state(config.claude_projects_root)
+    if source is None:
+        _print_root("Codex", codex_state, required=False)
+        _print_root("Claude Code", claude_state, required=False)
+        return codex_state == "ok" or claude_state == "ok", claude_state
+    if source is AgentProvider.CODEX:
+        _print_root("Codex", codex_state, required=True)
+        _print_root("Claude Code", claude_state, required=False)
+        return codex_state == "ok", claude_state
+    _print_root("Codex", codex_state, required=False)
+    _print_root("Claude Code", claude_state, required=True)
+    return claude_state == "ok", claude_state
+
+
+def _doctor_claude_counts(config: Config, source: AgentProvider | None, claude_state: str) -> None:
+    if claude_state != "ok":
+        return
+    if source not in (None, AgentProvider.CLAUDE):
+        return
+    confirmed, unconfirmed = claude_transcript_counts(config.claude_projects_root)
+    line = f"  Claude transcript: ID確認済み {confirmed} 件"
+    if unconfirmed:
+        line += f" / ID未確認 {unconfirmed} 件（候補外）"
+    print(line)
+
+
+def _doctor_cache(config: Config) -> bool:
+    cache = TranslationCache(config.cache_path)
+    status = cache.open()
+    print(f"キャッシュ: {status.path}")
+    if status.available:
+        print("  [OK] 利用可能")
+        return True
+    print(f"  [NG] {status.message}")
+    return False
+
+
+def _doctor_translation(config: Config) -> bool:
+    print(f"翻訳サーバー: {config.base_url} / model={config.model} / form={config.form}")
+    try:
+        models = asyncio.run(_list_models(config))
+    except TranslationFailure as exc:
+        print(f"  [NG] {exc.kind.label}")
+        return False
+    print(f"  [OK] 接続できました（モデル {len(models)} 件）")
+    if config.model in models:
+        print(f"  [OK] モデル {config.model} が見つかりました")
+        return True
+    print(f"  [NG] モデル {config.model} が /v1/models にありません")
+    for model_id in models:
+        print(f"        - {model_id}")
+    return False
+
+
 def run_doctor(config: Config, source: AgentProvider | None = None) -> int:
-    ok = True
     print(f"設定ファイル: {config.config_path or 'なし（既定値）'}")
     print(f"Codex home: {config.codex_home}")
     print(f"Codex セッションディレクトリ: {config.sessions_root}")
     print(f"Claude home: {config.claude_home}")
     print(f"Claude プロジェクトディレクトリ: {config.claude_projects_root}")
 
-    codex_state = _root_state(config.sessions_root)
-    claude_state = _root_state(config.claude_projects_root)
-    if source is None:
-        if codex_state == "ok" and claude_state == "ok":
-            ok = True
-        elif codex_state != "ok" and claude_state != "ok":
-            ok = False
-        _print_root("Codex", codex_state, required=False)
-        _print_root("Claude Code", claude_state, required=False)
-    elif source is AgentProvider.CODEX:
-        ok = codex_state == "ok"
-        _print_root("Codex", codex_state, required=True)
-        _print_root("Claude Code", claude_state, required=False)
-    else:
-        ok = claude_state == "ok"
-        _print_root("Codex", codex_state, required=False)
-        _print_root("Claude Code", claude_state, required=True)
-
-    if claude_state == "ok" and source in (None, AgentProvider.CLAUDE):
-        confirmed, unconfirmed = claude_transcript_counts(config.claude_projects_root)
-        line = f"  Claude transcript: ID確認済み {confirmed} 件"
-        if unconfirmed:
-            line += f" / ID未確認 {unconfirmed} 件（候補外）"
-        print(line)
-
-    cache = TranslationCache(config.cache_path)
-    status = cache.open()
-    print(f"キャッシュ: {status.path}")
-    if status.available:
-        print("  [OK] 利用可能")
-    else:
-        print(f"  [NG] {status.message}")
-        ok = False
-
-    print(f"翻訳サーバー: {config.base_url} / model={config.model} / form={config.form}")
-    try:
-        models = asyncio.run(_list_models(config))
-    except TranslationFailure as exc:
-        print(f"  [NG] {exc.kind.label}")
-        ok = False
-    else:
-        print(f"  [OK] 接続できました（モデル {len(models)} 件）")
-        if config.model in models:
-            print(f"  [OK] モデル {config.model} が見つかりました")
-        else:
-            print(f"  [NG] モデル {config.model} が /v1/models にありません")
-            for model_id in models:
-                print(f"        - {model_id}")
-            ok = False
-
+    roots_ok, claude_state = _doctor_roots(config, source)
+    _doctor_claude_counts(config, source, claude_state)
+    cache_ok = _doctor_cache(config)
+    translation_ok = _doctor_translation(config)
+    ok = roots_ok and cache_ok and translation_ok
     return EXIT_OK if ok else EXIT_FAILURE
 
 
