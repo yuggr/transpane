@@ -125,7 +125,7 @@ func (a *App) Init() tea.Cmd {
 func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case nil:
-		return a, a.waitForEvent()
+		return a, nil
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
@@ -168,7 +168,7 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			a.picker.restore(a.sessions)
 			a.adjustPicker()
 		}
-		return a, a.waitForEvent()
+		return a, nil
 	case tickMsg:
 		if a.session == nil || a.picker != nil {
 			return a, tea.Batch(a.discoverCmd(), a.tickCmd())
