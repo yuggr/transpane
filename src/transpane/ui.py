@@ -145,7 +145,7 @@ class SnapshotOutcome:
     unsupported_mode: str | None = None
     read_error: SessionReadError | None = None
     extracted: int = 0
-    selected: list[IndexEntry] | None = None
+    scan: ScanResult | None = None
 
 
 def _scan_failure(scan: ScanResult) -> SnapshotOutcome | None:
@@ -303,17 +303,16 @@ class Monitor:
         failure = _scan_failure(scan)
         if failure is not None:
             return failure
-        outcome = SnapshotOutcome(extracted=scan.stats.extracted)
-        outcome.selected = self._set_scan_entries(scan)
+        outcome = SnapshotOutcome(extracted=scan.stats.extracted, scan=scan)
         return outcome
 
     async def _read_snapshot_messages(
         self, outcome: SnapshotOutcome, generation: int
     ) -> SnapshotOutcome | None:
         reader = self._reader
-        if reader is None:
+        if reader is None or outcome.scan is None:
             return None
-        selected = outcome.selected or []
+        selected = self._set_scan_entries(outcome.scan)
         try:
             messages = await asyncio.to_thread(reader.read_messages, selected) if selected else []
         except SessionIndexMismatch:
