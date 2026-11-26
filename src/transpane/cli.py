@@ -107,24 +107,24 @@ def _print_root(label: str, state: str, required: bool) -> None:
         print(f"  [WARN] {_ROOT_MESSAGES[state]} ({label}: この取得元は利用できません)")
 
 
-def _doctor_roots(config: Config, source: AgentProvider | None) -> bool:
+def _doctor_roots(config: Config, source: AgentProvider | None) -> tuple[bool, str]:
     codex_state = _root_state(config.sessions_root)
     claude_state = _root_state(config.claude_projects_root)
     if source is None:
         _print_root("Codex", codex_state, required=False)
         _print_root("Claude Code", claude_state, required=False)
-        return codex_state == "ok" or claude_state == "ok"
+        return codex_state == "ok" or claude_state == "ok", claude_state
     if source is AgentProvider.CODEX:
         _print_root("Codex", codex_state, required=True)
         _print_root("Claude Code", claude_state, required=False)
-        return codex_state == "ok"
+        return codex_state == "ok", claude_state
     _print_root("Codex", codex_state, required=False)
     _print_root("Claude Code", claude_state, required=True)
-    return claude_state == "ok"
+    return claude_state == "ok", claude_state
 
 
-def _doctor_claude_counts(config: Config, source: AgentProvider | None) -> None:
-    if _root_state(config.claude_projects_root) != "ok":
+def _doctor_claude_counts(config: Config, source: AgentProvider | None, claude_state: str) -> None:
+    if claude_state != "ok":
         return
     if source not in (None, AgentProvider.CLAUDE):
         return
@@ -170,8 +170,8 @@ def run_doctor(config: Config, source: AgentProvider | None = None) -> int:
     print(f"Claude home: {config.claude_home}")
     print(f"Claude プロジェクトディレクトリ: {config.claude_projects_root}")
 
-    roots_ok = _doctor_roots(config, source)
-    _doctor_claude_counts(config, source)
+    roots_ok, claude_state = _doctor_roots(config, source)
+    _doctor_claude_counts(config, source, claude_state)
     cache_ok = _doctor_cache(config)
     translation_ok = _doctor_translation(config)
     ok = roots_ok and cache_ok and translation_ok

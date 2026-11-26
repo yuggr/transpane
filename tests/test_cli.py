@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -357,3 +358,46 @@ def test_doctor_runs_cache_diagnostics_when_translation_fails(env, capsys, monke
     assert code == 1
     assert "接続失敗" in out
     assert "キャッシュ:" in out
+
+
+def test_doctor_reads_each_root_state_once(env, monkeypatch):
+    calls = []
+    original = cli._root_state
+
+    def counting(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(cli, "_root_state", counting)
+
+    async def fake_models(config):
+        return ["plamo-3-translate-2b"]
+
+    monkeypatch.setattr(cli, "_list_models", fake_models)
+    code = cli.main(["doctor"])
+    assert code == 0
+    assert calls.count(env / "codex" / "sessions") == 1
+    assert calls.count(env / "claude" / "projects") == 1
+
+
+def test_doctor_translation_runs_when_cache_unavailable(env, capsys, monkeypatch):
+    class FailingCache:
+        def __init__(self, path):
+            self.path = path
+
+        def open(self):
+            return SimpleNamespace(available=False, path=str(self.path), message="locked")
+
+    monkeypatch.setattr(cli, "TranslationCache", FailingCache)
+
+    async def fake_models(config):
+        return ["plamo-3-translate-2b"]
+
+    monkeypatch.setattr(cli, "_list_models", fake_models)
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "キャッシュ:" in out
+    assert "翻訳サーバー:" in out
+    assert "[OK] モデル plamo-3-translate-2b" in out
+    assert out.index("キャッシュ:") < out.index("翻訳サーバー:")
