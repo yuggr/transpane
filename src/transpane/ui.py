@@ -145,6 +145,7 @@ class SnapshotOutcome:
     unsupported_mode: str | None = None
     read_error: SessionReadError | None = None
     extracted: int = 0
+    selected: list[IndexEntry] | None = None
 
 
 def _scan_failure(scan: ScanResult) -> SnapshotOutcome | None:
@@ -240,7 +241,7 @@ class Monitor:
             session, self._config.sessions_root, self._config.claude_projects_root
         )
         self._reader = reader
-        outcome = await self._read_snapshot(generation)
+        outcome = await self._scan_snapshot(generation)
         if outcome is None:
             return
         if outcome.failure == "scan_error":
@@ -262,6 +263,9 @@ class Monitor:
             return
         if outcome.extracted == 0:
             self._note = "対象イベント未検出（ログ形式または内部イベントのみ）"
+        outcome = await self._read_snapshot_messages(outcome, generation)
+        if outcome is None:
+            return
         if outcome.failure == "index_mismatch":
             await self._rebuild(generation, note="索引不一致のため再構築しました")
             return
@@ -289,7 +293,7 @@ class Monitor:
             return None, None
         return scan, None
 
-    async def _read_snapshot(self, generation: int) -> SnapshotOutcome | None:
+    async def _scan_snapshot(self, generation: int) -> SnapshotOutcome | None:
         reader = self._reader
         if reader is None:
             return None
@@ -300,7 +304,16 @@ class Monitor:
         if failure is not None:
             return failure
         outcome = SnapshotOutcome(extracted=scan.stats.extracted)
-        selected = self._set_scan_entries(scan)
+        outcome.selected = self._set_scan_entries(scan)
+        return outcome
+
+    async def _read_snapshot_messages(
+        self, outcome: SnapshotOutcome, generation: int
+    ) -> SnapshotOutcome | None:
+        reader = self._reader
+        if reader is None:
+            return None
+        selected = outcome.selected or []
         try:
             messages = await asyncio.to_thread(reader.read_messages, selected) if selected else []
         except SessionIndexMismatch:
@@ -475,7 +488,7 @@ class Monitor:
         self._stopped = True
         self._scheduler.cancel_generation(old_generation)
         self._clear_pending()
-        outcome = await self._read_snapshot(generation)
+        outcome = await self._scan_snapshot(generation)
         if outcome is None:
             return
         if outcome.failure == "scan_error":
@@ -498,6 +511,9 @@ class Monitor:
         self._note = note
         if outcome.extracted == 0:
             self._note += " / 対象イベント未検出"
+        outcome = await self._read_snapshot_messages(outcome, generation)
+        if outcome is None:
+            return
         if outcome.failure == "index_mismatch":
             self._stop(
                 "索引とログの内容が一致しません（監視停止）",

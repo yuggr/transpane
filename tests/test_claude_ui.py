@@ -1029,3 +1029,41 @@ async def test_switch_index_mismatch_rebuilds_instead_of_stopping(tmp_path, monk
     assert calls["count"] >= 2
     assert not any("対象イベント未検出" in (status.note or "") for status in listener.statuses)
     await monitor.close()
+
+
+async def test_rebuild_sets_note_before_reading_messages(tmp_path):
+    config = make_config(tmp_path)
+    records = [
+        claude_agent(
+            CLAUDE_ID,
+            f"Message {index}.",
+            uuid=f"00000000-0000-4000-8000-{index:012d}",
+        )
+        for index in range(3)
+    ]
+    write_claude_session(config.claude_projects_root, CLAUDE_ID, records)
+    session = select_session(
+        discover_all_sessions(
+            config.sessions_root, config.claude_projects_root, AgentProvider.CLAUDE
+        ),
+        CLAUDE_ID,
+    )
+    monitor = Monitor(config, FakeListener(), transport=httpx.MockTransport(translating_handler))
+    await monitor.start(session)
+    await wait_until(lambda: len(monitor.views) == 3)
+    if monitor._poll_task is not None:
+        monitor._poll_task.cancel()
+        monitor._poll_task = None
+    assert monitor._reader is not None
+    seen: dict[str, str | None] = {}
+    read_messages = monitor._reader.read_messages
+
+    def record_note(entries):
+        seen["note"] = monitor._note
+        return read_messages(entries)
+
+    monitor._reader.read_messages = record_note
+    await monitor._rebuild(monitor._generation, note="再構築テスト")
+    assert seen["note"] == "再構築テスト"
+    assert monitor._note == "再構築テスト"
+    await monitor.close()
