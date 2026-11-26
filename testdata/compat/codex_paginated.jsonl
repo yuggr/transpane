@@ -1,0 +1,5 @@
+{"timestamp": "2026-11-25T01:00:00Z", "type": "session_meta", "payload": {"id": "compat-codex", "cwd": "/tmp/compat", "cli_version": "0.169.0", "history_mode": "paginated"}}
+{"timestamp": "2026-11-25T01:00:01Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "Please check the storage layer."}]}}}
+{"timestamp": "2026-11-25T01:00:02Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "id": "a1", "phase": "commentary", "content": [{"type": "Text", "text": "I will inspect `store.py`."}]}}}
+{"timestamp": "2026-11-25T01:00:03Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "Plan", "id": "p1", "text": "Step one"}}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "DO NOT USE"}]}}

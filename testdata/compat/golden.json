@@ -1,0 +1,196 @@
+{
+  "codex": {
+    "history_mode": "paginated",
+    "unsupported": null,
+    "thread_changed": null,
+    "stats": {
+      "records": 5,
+      "events": 4,
+      "extracted": 3,
+      "ignored": 1,
+      "invalid_lines": 0,
+      "oversized_lines": 0
+    },
+    "entries": [
+      {
+        "id": "u1",
+        "revision": "9db64eb9bbc83f956c5af9932897551bb1aa5a1dc7dfbfcb6da45d32fceeeae2",
+        "offset": 174,
+        "end": 391,
+        "kind": "user"
+      },
+      {
+        "id": "a1",
+        "revision": "d97d1c3014e1629f86b51654c8f850a5c4dd5e94ceace4f0974e5db7155b67c8",
+        "offset": 391,
+        "end": 627,
+        "kind": "commentary"
+      },
+      {
+        "id": "p1",
+        "revision": "6020c6d2df08ac6b932d7d7fb08a4431fe4c543c2a37eaec761f14803adb1c2b",
+        "offset": 627,
+        "end": 783,
+        "kind": "plan"
+      }
+    ],
+    "messages": [
+      {
+        "id": "u1",
+        "revision": "9db64eb9bbc83f956c5af9932897551bb1aa5a1dc7dfbfcb6da45d32fceeeae2",
+        "kind": "user",
+        "offset": 174,
+        "text": "Please check the storage layer.",
+        "timestamp": "2026-11-25T01:00:01Z"
+      },
+      {
+        "id": "a1",
+        "revision": "d97d1c3014e1629f86b51654c8f850a5c4dd5e94ceace4f0974e5db7155b67c8",
+        "kind": "commentary",
+        "offset": 391,
+        "text": "I will inspect `store.py`.",
+        "timestamp": "2026-11-25T01:00:02Z"
+      },
+      {
+        "id": "p1",
+        "revision": "6020c6d2df08ac6b932d7d7fb08a4431fe4c543c2a37eaec761f14803adb1c2b",
+        "kind": "plan",
+        "offset": 627,
+        "text": "Step one",
+        "timestamp": "2026-11-25T01:00:03Z"
+      }
+    ]
+  },
+  "claude": {
+    "history_mode": "claude-jsonl",
+    "unsupported": null,
+    "thread_changed": null,
+    "stats": {
+      "records": 3,
+      "events": 3,
+      "extracted": 2,
+      "ignored": 1,
+      "invalid_lines": 0,
+      "oversized_lines": 0
+    },
+    "entries": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "revision": "2b8c508d095b04cf46d31f59c5abebd63a803e877cb8192048bc556ee009b0ac",
+        "offset": 0,
+        "end": 267,
+        "kind": "user"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "revision": "c60df44d09f27cd6335c99e692d839674b0c435bc30d7ecb688104a43d2b92dc",
+        "offset": 267,
+        "end": 598,
+        "kind": "assistant"
+      }
+    ],
+    "messages": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "revision": "2b8c508d095b04cf46d31f59c5abebd63a803e877cb8192048bc556ee009b0ac",
+        "kind": "user",
+        "offset": 0,
+        "text": "Please check `store.py`.",
+        "timestamp": "2026-11-25T03:00:00Z"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "revision": "c60df44d09f27cd6335c99e692d839674b0c435bc30d7ecb688104a43d2b92dc",
+        "kind": "assistant",
+        "offset": 267,
+        "text": "The tests passed.",
+        "timestamp": "2026-11-25T03:00:01Z"
+      }
+    ]
+  },
+  "protection": {
+    "units": [
+      {
+        "id": 0,
+        "line": 0,
+        "prefix": "## ",
+        "suffix": "",
+        "source": "Results",
+        "markers": [],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Results",
+            "markers": [],
+            "trailing": ""
+          }
+        ]
+      },
+      {
+        "id": 1,
+        "line": 2,
+        "prefix": "",
+        "suffix": "",
+        "source": "I updated `store.py` and ran the targeted tests.",
+        "markers": [
+          "`store.py`"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "I updated @@CJ0@@ and ran the targeted tests.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "line": 4,
+        "prefix": "- ",
+        "suffix": "",
+        "source": "All tests passed.",
+        "markers": [],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "All tests passed.",
+            "markers": [],
+            "trailing": ""
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "line": 5,
+        "prefix": "- ",
+        "suffix": "",
+        "source": "Review `tests/test_store.py` before merging.",
+        "markers": [
+          "`tests/test_store.py`"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Review @@CJ0@@ before merging.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
+      }
+    ],
+    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n"
+  },
+  "cache_keys": {
+    "hello": "8f1899a2a426e162b566d6a00f2e975b4da89ce0a3af98a0a67edf17563db380",
+    "japanese": "50c95c221bc5efdbe23cdaa9ef3de5a957ee8ea1eb47d4f9316b07ad70d88f8e"
+  }
+}
