@@ -267,15 +267,26 @@ PR #4 のレビュー指摘に基づき、以下の2件のみを修正した。�
 - 回帰テスト: `test_doctor_reads_each_root_state_once`、
   `test_doctor_translation_runs_when_cache_unavailable`。
 
+### P2-03 旧 generation の読み取り失敗による誤停止
+
+- `_read_snapshot_messages` の `SessionIndexMismatch` / `SessionReadError` 捕捉時に
+  `generation != self._generation` なら `None` を返すようにした。旧セッションの
+  読み取り失敗が新セッションの `_stop()` を実行しない、基点 507a820 の取消契約を復元。
+- 回帰テスト `test_stale_read_failure_does_not_stop_new_session` を
+  `(read_error, switch)` と `(index_mismatch, rebuild)` でパラメータ化した。
+  `threading.Event` で旧読み取りを停止 → 新セッションへ switch → 旧読み取りを失敗、
+  の順に検証し、修正前コードでは両方失敗することを確認済み。
+
 ### 検証（修正後）
 
-- `uv run pytest -q`: 217 passed（既存209 + 追加8）
+- `uv run pytest -q`: 219 passed（既存209 + 追加10）
 - `uv run ruff check src tests`: clean
 - `uv run ruff format --check src tests`: clean
 - `git diff --check`: clean
-- `omen complexity -p src -f json`: 関数256、cognitive 合計 846、p95 10、最大 15、
+- `omen complexity -p src -f json`: 関数256、cognitive 合計 850、p95 10、最大 15、
   cognitive >10 の関数 10。
 
 >10 の関数数は設計 §7.2 の改善目標（9以下）を1件超過する。これは基点の note 順序へ
 戻した結果 `_rebuild` の cognitive が 12 から 13 へ増えたためであり、レビュー指示に従い
-数値合わせの追加分割は行っていない。
+数値合わせの追加分割は行っていない。P2-03 の generation 確認追加で cognitive 合計は
+846 から 850 へ増えたが、同様に追加分割は行っていない。
