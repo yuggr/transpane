@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,19 +15,13 @@ func legacyUser(text string) map[string]any {
 	return map[string]any{"timestamp": "2026-11-25T01:00:01Z", "type": "event_msg", "payload": map[string]any{"type": "user_message", "message": text}}
 }
 
-func paginatedAgent(id, text string) map[string]any {
-	return map[string]any{"timestamp": "2026-11-25T01:00:02Z", "type": "event_msg", "payload": map[string]any{
-		"type": "item_completed", "item": map[string]any{"type": "AgentMessage", "id": id, "phase": "commentary", "content": []any{map[string]any{"type": "Text", "text": text}}},
-	}}
-}
-
 func appendLines(t *testing.T, path string, records []map[string]any) {
 	t.Helper()
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test-controlled temp path
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if _, err := file.Write(dump(records)); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +35,7 @@ func TestScanAndReadMessages(t *testing.T) {
 		{"type": "response_item", "payload": map[string]any{"type": "message"}},
 		{"type": "event_msg", "payload": map[string]any{"type": "agent_message", "message": "I will look."}},
 	}
-	if err := os.WriteFile(path, dump(records), 0o644); err != nil {
+	if err := os.WriteFile(path, dump(records), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := NewReader(path, "thread-1", ReaderOptions{})
@@ -65,7 +60,7 @@ func TestScanAndReadMessages(t *testing.T) {
 
 func TestIncrementalWaitsForCompleteLineAndUTF8(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout-a.jsonl")
-	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("first")}), 0o644); err != nil {
+	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("first")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := NewReader(path, "t", ReaderOptions{})
@@ -74,15 +69,15 @@ func TestIncrementalWaitsForCompleteLineAndUTF8(t *testing.T) {
 	}
 	payload := dump([]map[string]any{legacyUser("second")})
 	half := len(payload) / 2
-	file, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	file, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test-controlled temp path
 	_, _ = file.Write(payload[:half])
-	file.Close()
+	_ = file.Close()
 	if polled := reader.Poll(); len(polled.Messages) != 0 {
 		t.Fatal("partial line parsed")
 	}
-	file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test-controlled temp path
 	_, _ = file.Write(payload[half:])
-	file.Close()
+	_ = file.Close()
 	polled := reader.Poll()
 	if len(polled.Messages) != 1 || polled.Messages[0].Original != "second" {
 		t.Fatalf("%+v", polled)
@@ -93,13 +88,13 @@ func TestIncrementalWaitsForCompleteLineAndUTF8(t *testing.T) {
 
 	payload = dump([]map[string]any{legacyUser("日本語の途中")})
 	cut := len(payload)/2 - 1
-	file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test-controlled temp path
 	_, _ = file.Write(payload[:cut])
-	file.Close()
+	_ = file.Close()
 	_ = reader.Poll()
-	file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test-controlled temp path
 	_, _ = file.Write(payload[cut:])
-	file.Close()
+	_ = file.Close()
 	polled = reader.Poll()
 	if len(polled.Messages) != 1 || polled.Messages[0].Original != "日本語の途中" {
 		t.Fatalf("%+v", polled)
@@ -112,7 +107,7 @@ func TestInvalidAndOversizedLines(t *testing.T) {
 	body = append(body, []byte(`{"type": "event_msg", "payload": {"type": "agent_message", "message": "`+strings.Repeat("x", 400)+`"}}`+"\n")...)
 	body = append(body, []byte("{invalid json\n")...)
 	body = append(body, dump([]map[string]any{legacyUser("after")})...)
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := NewReader(path, "t", ReaderOptions{MaxLineBytes: 300})
@@ -131,7 +126,7 @@ func TestInvalidAndOversizedLines(t *testing.T) {
 
 func TestUnsupportedModeAndThreadChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout-a.jsonl")
-	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "chunked"), legacyUser("secret")}), 0o644); err != nil {
+	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "chunked"), legacyUser("secret")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := NewReader(path, "t", ReaderOptions{})
@@ -144,7 +139,7 @@ func TestUnsupportedModeAndThreadChange(t *testing.T) {
 	}
 
 	path2 := filepath.Join(t.TempDir(), "rollout-b.jsonl")
-	if err := os.WriteFile(path2, dump([]map[string]any{codexMeta("t", "legacy")}), 0o644); err != nil {
+	if err := os.WriteFile(path2, dump([]map[string]any{codexMeta("t", "legacy")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader2 := NewReader(path2, "t", ReaderOptions{})
@@ -161,7 +156,7 @@ func TestUnsupportedModeAndThreadChange(t *testing.T) {
 func TestMissingRebuiltAndShrink(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rollout-a.jsonl")
-	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("one")}), 0o644); err != nil {
+	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("one")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := NewReader(path, "t", ReaderOptions{})
@@ -172,7 +167,7 @@ func TestMissingRebuiltAndShrink(t *testing.T) {
 	if !reader.Poll().Missing {
 		t.Fatal("missing not detected")
 	}
-	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("one")}), 0o644); err != nil {
+	if err := os.WriteFile(path, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("one")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader = NewReader(path, "t", ReaderOptions{})
@@ -181,7 +176,7 @@ func TestMissingRebuiltAndShrink(t *testing.T) {
 	}
 	appendLines(t, path, []map[string]any{legacyUser("two")})
 	replacement := filepath.Join(dir, "rollout-b.jsonl")
-	if err := os.WriteFile(replacement, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("replaced")}), 0o644); err != nil {
+	if err := os.WriteFile(replacement, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("replaced")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(replacement, path); err != nil {
@@ -191,14 +186,14 @@ func TestMissingRebuiltAndShrink(t *testing.T) {
 		t.Fatal("replacement not detected")
 	}
 	path3 := filepath.Join(dir, "rollout-c.jsonl")
-	if err := os.WriteFile(path3, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("one"), legacyUser("two")}), 0o644); err != nil {
+	if err := os.WriteFile(path3, dump([]map[string]any{codexMeta("t", "legacy"), legacyUser("one"), legacyUser("two")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader3 := NewReader(path3, "t", ReaderOptions{})
 	if _, err := reader3.ScanAll(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path3, dump([]map[string]any{codexMeta("t", "legacy")}), 0o644); err != nil {
+	if err := os.WriteFile(path3, dump([]map[string]any{codexMeta("t", "legacy")}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if !reader3.Poll().Rebuilt {
@@ -224,7 +219,7 @@ func TestClaudeReaderDedupesAndVerifies(t *testing.T) {
 	})
 	offsets := []int64{}
 	var position int64
-	raw, _ := os.ReadFile(path)
+	raw, _ := os.ReadFile(path) //nolint:gosec // test-controlled temp path
 	for _, line := range strings.SplitAfter(string(raw), "\n") {
 		if line == "" {
 			continue
@@ -244,7 +239,6 @@ func TestClaudeReaderDedupesAndVerifies(t *testing.T) {
 	if err != nil || messages[0].Original != "updated" || messages[1].Original != "other" {
 		t.Fatalf("%+v %v", messages, err)
 	}
-
 }
 
 func TestClaudeSameSizeRewriteDetectedOnReadback(t *testing.T) {
@@ -264,8 +258,13 @@ func TestClaudeSameSizeRewriteDetectedOnReadback(t *testing.T) {
 	if len(reader.Poll().Messages) != 0 {
 		t.Fatal("poll returned rewritten content")
 	}
-	if _, err := reader.ReadMessages(result.Entries); err == nil || err.(*ReadError).Reason != "index_mismatch" {
-		t.Fatalf("readback error %v", err)
+	if _, err := reader.ReadMessages(result.Entries); err == nil {
+		t.Fatal("expected index mismatch")
+	} else {
+		var readErr *ReadError
+		if !errors.As(err, &readErr) || readErr.Reason != "index_mismatch" {
+			t.Fatalf("readback error %v", err)
+		}
 	}
 }
 
@@ -283,13 +282,18 @@ func TestClaudeMismatchAndSymlinks(t *testing.T) {
 	if result.ThreadChanged == nil || *result.ThreadChanged != "other" {
 		t.Fatalf("%+v", result)
 	}
-	if _, err := reader.ReadMessages(result.Entries); err == nil || err.(*ReadError).Reason != "halted" {
-		t.Fatalf("read error %v", err)
+	if _, err := reader.ReadMessages(result.Entries); err == nil {
+		t.Fatal("expected halted")
+	} else {
+		var readErr *ReadError
+		if !errors.As(err, &readErr) || readErr.Reason != "halted" {
+			t.Fatalf("read error %v", err)
+		}
 	}
 
 	valid := writeClaude(t, root, "demo", "66666666-6666-4666-8666-666666666666", []map[string]any{claudeRecord("66666666-6666-4666-8666-666666666666", "ok", nil)})
 	outside := filepath.Join(t.TempDir(), "outside.jsonl")
-	if err := os.WriteFile(outside, []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(outside, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "demo", "77777777-7777-4777-8777-777777777777.jsonl")

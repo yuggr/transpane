@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
-
-	"github.com/yuggr/transpane/internal/config"
 )
 
 // Key returns the SHA-256 of the Python-compatible 8-element JSON list.
@@ -40,8 +38,9 @@ func quote(value string) string {
 		default:
 			if r < 0x20 {
 				builder.WriteString(`\u00`)
-				builder.WriteByte(hexDigit(byte(r) >> 4))
-				builder.WriteByte(hexDigit(byte(r) & 0xf))
+				// r < 0x20 here, so the byte conversion is exact.
+				builder.WriteByte(hexDigit(byte(r) >> 4))  //nolint:gosec // bounded control rune
+				builder.WriteByte(hexDigit(byte(r) & 0xf)) //nolint:gosec // bounded control rune
 			} else {
 				builder.WriteRune(r)
 			}
@@ -57,9 +56,3 @@ func hexDigit(value byte) byte {
 	}
 	return 'a' + value - 10
 }
-
-// Versions are shared with the Python baseline.
-const (
-	cacheSchemaVersion       = config.CacheSchemaVersion
-	translationPolicyVersion = config.TranslationPolicyVersion
-)

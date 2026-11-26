@@ -1,11 +1,12 @@
 package deps
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"database/sql"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -13,7 +14,6 @@ import (
 	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
 	_ "modernc.org/sqlite"
-	"path/filepath"
 )
 
 type smokeModel struct{}
@@ -49,7 +49,7 @@ func TestDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec("CREATE TABLE translations (cache_key TEXT PRIMARY KEY, translated TEXT NOT NULL, created_at TEXT NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}

@@ -82,11 +82,11 @@ func (lr *lineReader) readLine(max int) (line []byte, complete bool, err error) 
 // ReadCodexMeta returns the first valid session_meta payload within the
 // 1 MiB head, reproducing the Python readline boundary rules.
 func ReadCodexMeta(path string) (map[string]any, bool) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // path comes from validated discovery
 	if err != nil {
 		return nil, false
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	reader := newLineReader(file)
 	consumed := 0
 	for consumed < config.MetaReadLimit {
@@ -301,11 +301,11 @@ func iterClaudeFiles(projectsRoot string) []string {
 // ReadClaudeMeta confirms the session ID from the first eligible complete
 // head line within 1 MiB.
 func ReadClaudeMeta(path string) (cwd, version *string, ok bool) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // path comes from validated discovery
 	if err != nil {
 		return nil, nil, false
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	reader := newLineReader(file)
 	consumed := 0
 	stem := strings.TrimSuffix(filepath.Base(path), ".jsonl")

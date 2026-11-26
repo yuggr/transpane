@@ -10,10 +10,10 @@ func writeConfig(t *testing.T, body string) (env map[string]string, root string)
 	t.Helper()
 	root = t.TempDir()
 	dir := filepath.Join(root, "config", "transpane")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return map[string]string{

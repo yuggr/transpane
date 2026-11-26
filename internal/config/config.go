@@ -102,7 +102,7 @@ func LoadFrom(env map[string]string, home string) (Config, error) {
 	data := map[string]any{}
 	existing := ""
 	if _, err := os.Stat(configPath); err == nil {
-		raw, err := os.ReadFile(configPath)
+		raw, err := os.ReadFile(configPath) //nolint:gosec // the config path is user-selected by design
 		if err != nil {
 			return Config{}, errorf("設定ファイルを読み込めません: %s", configPath)
 		}

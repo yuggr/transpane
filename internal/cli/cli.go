@@ -47,21 +47,21 @@ type App struct {
 func (a *App) Run(ctx context.Context, args []string) int {
 	parsed, err := parseArgs(args)
 	if err != nil {
-		fmt.Fprintf(a.stderr(), "usage: transpane [-h] [--version] [--source {all,codex,claude}] [--cwd PATH | --session ID] ...\ntranspane: error: %s\n", err)
+		writef(a.stderr(), "usage: transpane [-h] [--version] [--source {all,codex,claude}] [--cwd PATH | --session ID] ...\ntranspane: error: %s\n", err)
 		return ExitUsage
 	}
 	if parsed.help {
-		fmt.Fprint(a.stdout(), helpText)
+		_, _ = fmt.Fprint(a.stdout(), helpText)
 		return ExitOK
 	}
 	if parsed.version {
-		fmt.Fprintf(a.stdout(), "transpane %s (%s, %s)\n", Version, Commit, runtime.Version())
+		writef(a.stdout(), "transpane %s (%s, %s)\n", Version, Commit, runtime.Version())
 		return ExitOK
 	}
 
 	cfg, err := config.LoadFrom(a.environment(), a.home())
 	if err != nil {
-		fmt.Fprintf(a.stderr(), "設定エラー: %s\n", err)
+		writef(a.stderr(), "設定エラー: %s\n", err)
 		return ExitUsage
 	}
 	source := sourceFor(parsed.source)
@@ -89,6 +89,10 @@ func sourceFor(value string) *domain.Provider {
 		return nil
 	}
 }
+
+func writef(w io.Writer, format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+
+func writeln(w io.Writer, args ...any) { _, _ = fmt.Fprintln(w, args...) }
 
 func (a *App) stdout() io.Writer {
 	if a.Out != nil {
@@ -141,7 +145,7 @@ func (a *App) runTUI(ctx context.Context, cfg config.Config, sessionID, cwd stri
 		sessions := transcript.DiscoverAll(cfg.SessionsRoot, cfg.ClaudeProjectsRoot, source)
 		selected, err := transcript.SelectSession(sessions, sessionID, source)
 		if err != nil {
-			fmt.Fprintf(a.stderr(), "セッションエラー: %s\n", err)
+			writef(a.stderr(), "セッションエラー: %s\n", err)
 			return ExitUsage
 		}
 		initial = &selected
@@ -150,7 +154,7 @@ func (a *App) runTUI(ctx context.Context, cfg config.Config, sessionID, cwd stri
 		return ExitOK
 	}
 	if err := a.StartTUI(ctx, cfg, initial, cwd, source); err != nil {
-		fmt.Fprintf(a.stderr(), "画面エラー: %s\n", err)
+		writef(a.stderr(), "画面エラー: %s\n", err)
 		return ExitFailure
 	}
 	return ExitOK
@@ -158,7 +162,7 @@ func (a *App) runTUI(ctx context.Context, cfg config.Config, sessionID, cwd stri
 
 func defaultListModels(ctx context.Context, cfg config.Config) ([]string, error) {
 	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	return client.ListModels(ctx)
 }
 

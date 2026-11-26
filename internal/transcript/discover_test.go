@@ -34,10 +34,10 @@ func codexMeta(id, mode string) map[string]any {
 func writeRollout(t *testing.T, root, relative string, records []map[string]any) string {
 	t.Helper()
 	path := filepath.Join(root, relative)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, dump(records), 0o644); err != nil {
+	if err := os.WriteFile(path, dump(records), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -58,10 +58,10 @@ func claudeRecord(session, text string, extra map[string]any) map[string]any {
 func writeClaude(t *testing.T, root, project, session string, records []map[string]any) string {
 	t.Helper()
 	path := filepath.Join(root, project, session+".jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, dump(records), 0o644); err != nil {
+	if err := os.WriteFile(path, dump(records), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -118,7 +118,7 @@ func TestReadCodexMetaBoundaries(t *testing.T) {
 	}
 	for name, body := range cases {
 		path := filepath.Join(dir, name+".jsonl")
-		if err := os.WriteFile(path, body, 0o644); err != nil {
+		if err := os.WriteFile(path, body, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		payload, ok := ReadCodexMeta(path)
@@ -132,10 +132,12 @@ func TestReadCodexMetaBoundaries(t *testing.T) {
 				t.Fatalf("%s: %v %v", name, payload, ok)
 			}
 		default:
-			if !ok || payload["id"] != name {
-				if !(name == "invalid-head" && ok && payload["id"] == "real") {
-					t.Fatalf("%s: %v %v", name, payload, ok)
-				}
+			wanted := name
+			if name == "invalid-head" {
+				wanted = "real"
+			}
+			if !ok || payload["id"] != wanted {
+				t.Fatalf("%s: %v %v", name, payload, ok)
 			}
 		}
 	}
@@ -150,9 +152,9 @@ func TestClaudeDiscoveryDirectFilesOnly(t *testing.T) {
 	valid := writeClaude(t, root, "demo", claudeSession, []map[string]any{claudeRecord(claudeSession, "ok", nil)})
 	writeClaude(t, root, "demo/subagents", "22222222-2222-4222-8222-222222222222", []map[string]any{claudeRecord("22222222-2222-4222-8222-222222222222", "sub", nil)})
 	writeClaude(t, root, "demo", "not-a-uuid", []map[string]any{claudeRecord("not-a-uuid", "bad", nil)})
-	_ = os.WriteFile(filepath.Join(root, "demo", "sessions-index.json"), []byte("{}"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "demo", "sessions-index.json"), []byte("{}"), 0o600)
 	outside := filepath.Join(t.TempDir(), "outside.jsonl")
-	_ = os.WriteFile(outside, dump([]map[string]any{claudeRecord(claudeSession, "outside", nil)}), 0o644)
+	_ = os.WriteFile(outside, dump([]map[string]any{claudeRecord(claudeSession, "outside", nil)}), 0o600)
 	_ = os.Symlink(outside, filepath.Join(root, "demo", "44444444-4444-4444-8444-444444444444.jsonl"))
 	_ = os.Symlink(filepath.Join(root, "demo"), filepath.Join(root, "linked-project"))
 

@@ -297,14 +297,12 @@ func protectCore(core string) (string, bool, []Segment, []string) {
 		return "long_unsplittable", true, nil, nil
 	}
 	segments := make([]Segment, 0, len(pieces))
-	allMarkers := make([]string, 0)
 	for _, piece := range pieces {
 		markers := markerPattern.FindAllString(piece[0], -1)
 		if markers == nil {
 			markers = []string{}
 		}
 		segments = append(segments, Segment{Text: piece[0], Markers: markers, Trailing: piece[1]})
-		allMarkers = append(allMarkers, markers...)
 	}
 	return "", false, segments, values
 }

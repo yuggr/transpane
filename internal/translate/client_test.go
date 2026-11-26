@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const base = "http://127.0.0.1:1234/v1"
-
 func newClient(t *testing.T, url string, opts ...Option) *Client {
 	t.Helper()
 	return NewClient(url, "plamo-3-translate-2b", "polite", opts...)
@@ -33,7 +31,7 @@ func TestTranslateRequestAndResponse(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newClient(t, server.URL+"/v1")
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	translated, err := client.Translate(context.Background(), "The storage layer requires atomic writes.")
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +76,7 @@ func TestFailureClassification(t *testing.T) {
 			}))
 			defer server.Close()
 			client := newClient(t, server.URL+"/v1")
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 			_, err := client.Translate(context.Background(), "Hello")
 			var failure *Failure
 			if !errors.As(err, &failure) {
@@ -104,7 +102,7 @@ func TestConnectAndTimeout(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Kind != ErrorKindConnect || !failure.ServerUnavailable() {
 		t.Fatalf("%v", err)
 	}
-	client.Close()
+	_ = client.Close()
 
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)
@@ -112,7 +110,7 @@ func TestConnectAndTimeout(t *testing.T) {
 	}))
 	defer slow.Close()
 	timeoutClient := NewClient(slow.URL+"/v1", "m", "polite", WithTimeouts(50*time.Millisecond, 50*time.Millisecond, 80*time.Millisecond))
-	defer timeoutClient.Close()
+	defer func() { _ = timeoutClient.Close() }()
 	_, err = timeoutClient.Translate(context.Background(), "Hello")
 	if !errors.As(err, &failure) || failure.Kind != ErrorKindTimeout || !failure.ServerUnavailable() {
 		t.Fatalf("%v", err)
@@ -127,7 +125,7 @@ func TestRedirectNotFollowed(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newClient(t, server.URL+"/v1")
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	_, err := client.Translate(context.Background(), "Hello")
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Kind != ErrorKindHTTP || calls != 1 {
@@ -144,7 +142,7 @@ func TestProxyEnvironmentIgnored(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newClient(t, server.URL+"/v1")
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if got, err := client.Translate(context.Background(), "Hello"); err != nil || got != "訳" {
 		t.Fatalf("%q %v", got, err)
 	}
@@ -159,7 +157,7 @@ func TestListModels(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newClient(t, server.URL+"/v1")
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	models, err := client.ListModels(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +173,7 @@ func TestResponseBodyCap(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newClient(t, server.URL+"/v1")
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	_, err := client.Translate(context.Background(), "Hello")
 	var failure *Failure
 	if !errors.As(err, &failure) || failure.Kind != ErrorKindInvalid {
@@ -189,7 +187,7 @@ func TestCancelledContext(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newClient(t, server.URL+"/v1")
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := client.Translate(ctx, "Hello")

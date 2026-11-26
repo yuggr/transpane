@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -46,11 +47,11 @@ func (a *App) rootState(path string) string {
 func (a *App) printRoot(label, state string, required bool) {
 	switch {
 	case state == "ok":
-		fmt.Fprintf(a.stdout(), "  [OK] 読み取り可能 (%s)\n", label)
+		writef(a.stdout(), "  [OK] 読み取り可能 (%s)\n", label)
 	case required:
-		fmt.Fprintf(a.stdout(), "  [NG] %s (%s)\n", rootMessages[state], label)
+		writef(a.stdout(), "  [NG] %s (%s)\n", rootMessages[state], label)
 	default:
-		fmt.Fprintf(a.stdout(), "  [WARN] %s (%s: この取得元は利用できません)\n", rootMessages[state], label)
+		writef(a.stdout(), "  [WARN] %s (%s: この取得元は利用できません)\n", rootMessages[state], label)
 	}
 }
 
@@ -85,24 +86,24 @@ func (a *App) doctorClaudeCounts(cfg config.Config, source *domain.Provider, cla
 	if unconfirmed > 0 {
 		line += fmt.Sprintf(" / ID未確認 %d 件（候補外）", unconfirmed)
 	}
-	fmt.Fprintln(a.stdout(), line)
+	writeln(a.stdout(), line)
 }
 
 func (a *App) doctorCache(cfg config.Config) bool {
 	instance := cache.Open(cfg.CachePath)
-	defer instance.Close()
+	defer func() { _ = instance.Close() }()
 	status := instance.Status()
-	fmt.Fprintf(a.stdout(), "キャッシュ: %s\n", status.Path)
+	writef(a.stdout(), "キャッシュ: %s\n", status.Path)
 	if status.Available {
-		fmt.Fprintln(a.stdout(), "  [OK] 利用可能")
+		writeln(a.stdout(), "  [OK] 利用可能")
 		return true
 	}
-	fmt.Fprintf(a.stdout(), "  [NG] %s\n", status.Message)
+	writef(a.stdout(), "  [NG] %s\n", status.Message)
 	return false
 }
 
 func (a *App) doctorTranslation(ctx context.Context, cfg config.Config) bool {
-	fmt.Fprintf(a.stdout(), "翻訳サーバー: %s / model=%s / form=%s\n", cfg.BaseURL, cfg.Model, cfg.Form)
+	writef(a.stdout(), "翻訳サーバー: %s / model=%s / form=%s\n", cfg.BaseURL, cfg.Model, cfg.Form)
 	listModels := a.ListModels
 	if listModels == nil {
 		listModels = defaultListModels
@@ -110,32 +111,33 @@ func (a *App) doctorTranslation(ctx context.Context, cfg config.Config) bool {
 	models, err := listModels(ctx, cfg)
 	if err != nil {
 		kind := translate.ErrorKindConnect
-		if failure, ok := err.(*translate.Failure); ok {
+		var failure *translate.Failure
+		if errors.As(err, &failure) {
 			kind = failure.Kind
 		}
-		fmt.Fprintf(a.stdout(), "  [NG] %s\n", kind.Label())
+		writef(a.stdout(), "  [NG] %s\n", kind.Label())
 		return false
 	}
-	fmt.Fprintf(a.stdout(), "  [OK] 接続できました（モデル %d 件）\n", len(models))
+	writef(a.stdout(), "  [OK] 接続できました（モデル %d 件）\n", len(models))
 	for _, model := range models {
 		if model == cfg.Model {
-			fmt.Fprintf(a.stdout(), "  [OK] モデル %s が見つかりました\n", cfg.Model)
+			writef(a.stdout(), "  [OK] モデル %s が見つかりました\n", cfg.Model)
 			return true
 		}
 	}
-	fmt.Fprintf(a.stdout(), "  [NG] モデル %s が /v1/models にありません\n", cfg.Model)
+	writef(a.stdout(), "  [NG] モデル %s が /v1/models にありません\n", cfg.Model)
 	for _, model := range models {
-		fmt.Fprintf(a.stdout(), "        - %s\n", model)
+		writef(a.stdout(), "        - %s\n", model)
 	}
 	return false
 }
 
 func (a *App) runDoctor(ctx context.Context, cfg config.Config, source *domain.Provider) int {
-	fmt.Fprintf(a.stdout(), "設定ファイル: %s\n", configPathLabel(cfg.ConfigPath))
-	fmt.Fprintf(a.stdout(), "Codex home: %s\n", cfg.CodexHome)
-	fmt.Fprintf(a.stdout(), "Codex セッションディレクトリ: %s\n", cfg.SessionsRoot)
-	fmt.Fprintf(a.stdout(), "Claude home: %s\n", cfg.ClaudeHome)
-	fmt.Fprintf(a.stdout(), "Claude プロジェクトディレクトリ: %s\n", cfg.ClaudeProjectsRoot)
+	writef(a.stdout(), "設定ファイル: %s\n", configPathLabel(cfg.ConfigPath))
+	writef(a.stdout(), "Codex home: %s\n", cfg.CodexHome)
+	writef(a.stdout(), "Codex セッションディレクトリ: %s\n", cfg.SessionsRoot)
+	writef(a.stdout(), "Claude home: %s\n", cfg.ClaudeHome)
+	writef(a.stdout(), "Claude プロジェクトディレクトリ: %s\n", cfg.ClaudeProjectsRoot)
 
 	rootsOK, claudeState := a.doctorRoots(cfg, source)
 	a.doctorClaudeCounts(cfg, source, claudeState)

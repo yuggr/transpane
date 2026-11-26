@@ -14,8 +14,10 @@ import (
 	"github.com/yuggr/transpane/internal/translate"
 )
 
-const userText = "保存処理を調べて"
-const secretBody = "SECRET BODY SHOULD NOT BE PRINTED"
+const (
+	userText   = "保存処理を調べて"
+	secretBody = "SECRET BODY SHOULD NOT BE PRINTED"
+)
 
 func codexMeta(id string) map[string]any {
 	return map[string]any{"timestamp": "2026-11-25T01:00:00Z", "type": "session_meta", "payload": map[string]any{
@@ -35,11 +37,11 @@ func codexRecords(id string) []map[string]any {
 func writeSessions(t *testing.T, env map[string]string, id string) string {
 	t.Helper()
 	dir := filepath.Join(env["CODEX_HOME"], "sessions", "2026", "11", "25")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "rollout-"+id+".jsonl")
-	file, err := os.Create(path)
+	file, err := os.Create(path) //nolint:gosec // test-controlled temp path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func writeSessions(t *testing.T, env map[string]string, id string) string {
 	for _, record := range codexRecords(id) {
 		_ = encoder.Encode(record)
 	}
-	file.Close()
+	_ = file.Close()
 	return path
 }
 
@@ -55,11 +57,11 @@ func testEnv(t *testing.T) map[string]string {
 	t.Helper()
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config", "transpane")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	body := "[translation]\nbase_url = \"http://127.0.0.1:1234/v1\"\nmodel = \"plamo-3-translate-2b\"\n"
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return map[string]string{
@@ -150,7 +152,7 @@ func TestDoctorSuccessAndFailures(t *testing.T) {
 func TestConfigErrorsExitTwo(t *testing.T) {
 	env := testEnv(t)
 	path := filepath.Join(env["XDG_CONFIG_HOME"], "transpane", "config.toml")
-	_ = os.WriteFile(path, []byte("[translation]\nmodel = ''\n"), 0o644)
+	_ = os.WriteFile(path, []byte("[translation]\nmodel = ''\n"), 0o600)
 	result := runApp(t, env, []string{"sessions"}, nil)
 	if result.code != 2 || !strings.Contains(result.err, "設定エラー") {
 		t.Fatalf("%+v", result)

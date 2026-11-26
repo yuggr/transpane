@@ -39,6 +39,11 @@ func newTestApp() *App {
 	return app
 }
 
+func (a *App) handleKeyForTest(key string) tea.Cmd {
+	_, cmd := a.handleKey(tea.KeyPressMsg{Code: rune(key[0]), Text: key})
+	return cmd
+}
+
 func TestSanitizeForDisplay(t *testing.T) {
 	cases := map[string]string{
 		"plain":                              "plain",
@@ -138,6 +143,20 @@ func TestScrollAnchorPreservedAcrossUpdate(t *testing.T) {
 	app.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	if !app.autoScroll || !app.viewport.AtBottom() {
 		t.Fatal("End did not resume auto scroll")
+	}
+}
+
+func TestSKeyOpensPickerWithActiveSession(t *testing.T) {
+	app := newTestApp()
+	app.Update(resetMsg{session: &domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}, views: nil})
+	app.session = &domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	cmd := app.handleKeyForTest("s")
+	if cmd == nil || !app.pendingPicker {
+		t.Fatal("s did not request discovery")
+	}
+	app.Update(sessionsMsg{sessions: []domain.SessionInfo{{ThreadID: "t", Provider: domain.ProviderCodex}}})
+	if app.picker == nil {
+		t.Fatal("picker did not open")
 	}
 }
 

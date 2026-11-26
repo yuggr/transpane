@@ -186,7 +186,7 @@ func New(ctx context.Context, cfg config.Config, listener Listener, options Opti
 	monitor.lastUpdate = time.Now().Format("15:04:05")
 	monitor.workers.Add(2)
 	go monitor.readerLoop()
-	go monitor.translationLoop()
+	go monitor.translationLoop() //nolint:contextcheck // worker derives from monitor context
 	go monitor.loop()
 	return monitor
 }
@@ -1051,13 +1051,13 @@ func (m *Monitor) translationLoop() {
 				m.respondTranslation(response)
 				continue
 			}
-			response := m.translateSegment(task.job, memo)
+			response := m.translateSegment(m.ctx, task.job, memo)
 			m.respondTranslation(response)
 		}
 	}
 }
 
-func (m *Monitor) translateSegment(job *Job, memo map[string]string) translationResponse {
+func (m *Monitor) translateSegment(fallback context.Context, job *Job, memo map[string]string) translationResponse {
 	response := translationResponse{job: job}
 	if job.NextIndex >= len(job.Segments) {
 		response.errKind = string(translate.ErrorKindCancelled)
@@ -1065,9 +1065,9 @@ func (m *Monitor) translateSegment(job *Job, memo map[string]string) translation
 	}
 	segment := job.Segments[job.NextIndex]
 	key := cache.Key(m.config.BaseURL, m.config.Model, m.config.Form, segment.Text)
-	ctx := job.Ctx
+	ctx := job.Ctx //nolint:contextcheck // per-generation context from schedule()
 	if ctx == nil {
-		ctx = m.ctx
+		ctx = fallback
 	}
 	if err := ctx.Err(); err != nil {
 		response.errKind = string(translate.ErrorKindCancelled)

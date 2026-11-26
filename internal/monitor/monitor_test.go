@@ -33,34 +33,31 @@ func (l *testListener) Reset(_ *domain.SessionInfo, _ []View) {
 	l.resets++
 	l.mu.Unlock()
 }
+
 func (l *testListener) Added(view View) {
 	l.mu.Lock()
 	l.added = append(l.added, view)
 	l.mu.Unlock()
 }
+
 func (l *testListener) Prepended(views []View) {
 	l.mu.Lock()
 	l.prepended = append(l.prepended, views...)
 	l.mu.Unlock()
 }
+
 func (l *testListener) Updated(View) {
 	l.mu.Lock()
 	l.updated++
 	l.mu.Unlock()
 }
+
 func (l *testListener) Status(status Status) {
 	l.mu.Lock()
 	l.statuses = append(l.statuses, status)
 	l.mu.Unlock()
 }
-func (l *testListener) lastStatus() Status {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.statuses) == 0 {
-		return Status{}
-	}
-	return l.statuses[len(l.statuses)-1]
-}
+
 func (l *testListener) noteSeen(part string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -73,13 +70,14 @@ func (l *testListener) noteSeen(part string) bool {
 }
 
 type fakeTransport struct {
-	mu      sync.Mutex
-	posts   int
-	gets    int
-	texts   []string
-	handler func(text string) (status int, body string)
-	gate    chan struct{}
-	started chan string
+	mu       sync.Mutex
+	posts    int
+	gets     int
+	texts    []string
+	handler  func(text string) (status int, body string)
+	gate     chan struct{}
+	gateText string
+	started  chan string
 }
 
 func (f *fakeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -112,7 +110,11 @@ func (f *fakeTransport) RoundTrip(request *http.Request) (*http.Response, error)
 		default:
 		}
 	}
-	if gate != nil && strings.Contains(text, "Slow A") {
+	block := "Slow A"
+	if f.gateText != "" {
+		block = f.gateText
+	}
+	if gate != nil && strings.Contains(text, block) {
 		<-gate
 	}
 	if handler != nil {
@@ -133,6 +135,7 @@ func (f *fakeTransport) postCount() int {
 	defer f.mu.Unlock()
 	return f.posts
 }
+
 func (f *fakeTransport) getCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -185,10 +188,10 @@ func codexUser(id, text string) map[string]any {
 func writeCodex(t *testing.T, cfg config.Config, id string, records []map[string]any) string {
 	t.Helper()
 	path := filepath.Join(cfg.SessionsRoot, "2026", "11", "25", "rollout-"+id+".jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.Create(path)
+	file, err := os.Create(path) //nolint:gosec // test fixture path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,13 +201,13 @@ func writeCodex(t *testing.T, cfg config.Config, id string, records []map[string
 			t.Fatal(err)
 		}
 	}
-	file.Close()
+	_ = file.Close()
 	return path
 }
 
 func appendCodex(t *testing.T, path string, records []map[string]any) {
 	t.Helper()
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test-controlled temp path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +215,27 @@ func appendCodex(t *testing.T, path string, records []map[string]any) {
 	for _, record := range records {
 		_ = encoder.Encode(record)
 	}
-	file.Close()
+	_ = file.Close()
+}
+
+func writeClaude(t *testing.T, cfg config.Config, id, text string) string {
+	t.Helper()
+	path := filepath.Join(cfg.ClaudeProjectsRoot, "demo", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := map[string]any{
+		"type": "assistant", "sessionId": id, "uuid": "u-1",
+		"timestamp": "2026-11-25T03:00:00Z", "cwd": "/tmp/demo", "version": "2.1.285",
+		"message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}},
+	}
+	file, err := os.Create(path) //nolint:gosec // test fixture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.NewEncoder(file).Encode(record)
+	_ = file.Close()
+	return path
 }
 
 func codexSession(t *testing.T, cfg config.Config, id string) domain.SessionInfo {
@@ -259,7 +282,7 @@ func TestMonitorTranslatesPreservesOrderAndFile(t *testing.T) {
 	path := writeCodex(t, cfg, "t", []map[string]any{
 		codexMeta("t", "paginated"), codexUser("u-t", "保存処理を調べて"), codexAgent("a1", "I will inspect the storage layer."), codexAgentPhase("a2", "The tests passed.", "final_answer"),
 	})
-	before, _ := os.ReadFile(path)
+	before, _ := os.ReadFile(path) //nolint:gosec // test-controlled temp path
 	beforeStat, _ := os.Stat(path)
 	listener := &testListener{}
 	fake := &fakeTransport{}
@@ -280,7 +303,7 @@ func TestMonitorTranslatesPreservesOrderAndFile(t *testing.T) {
 	if views[2].Message.Kind != domain.MessageKindFinal {
 		t.Fatalf("%+v", views[2])
 	}
-	after, _ := os.ReadFile(path)
+	after, _ := os.ReadFile(path) //nolint:gosec // test-controlled temp path
 	afterStat, _ := os.Stat(path)
 	if string(before) != string(after) || !beforeStat.ModTime().Equal(afterStat.ModTime()) {
 		t.Fatal("transcript changed")
@@ -421,12 +444,12 @@ func TestMonitorRebuildsAfterReplacement(t *testing.T) {
 	})
 	replacement := path + ".new"
 	records := []map[string]any{codexMeta("t", "paginated"), codexAgent("a2", "replaced.")}
-	file, _ := os.Create(replacement)
+	file, _ := os.Create(replacement) //nolint:gosec // test-controlled temp path
 	encoder := json.NewEncoder(file)
 	for _, record := range records {
 		_ = encoder.Encode(record)
 	}
-	file.Close()
+	_ = file.Close()
 	if err := os.Rename(replacement, path); err != nil {
 		t.Fatal(err)
 	}
@@ -446,8 +469,8 @@ func TestMonitorDeniedStopsUntilSwitch(t *testing.T) {
 	monitor.Start(&session)
 	waitUntil(t, 5*time.Second, func() bool { return len(monitor.Views()) == 1 && allSettled(monitor.Views()) })
 	outside := filepath.Join(t.TempDir(), "outside.jsonl")
-	original, _ := os.ReadFile(path)
-	_ = os.WriteFile(outside, original, 0o644)
+	original, _ := os.ReadFile(path)           //nolint:gosec // test-controlled temp path
+	_ = os.WriteFile(outside, original, 0o600) //nolint:gosec // test-controlled temp path
 	_ = os.Remove(path)
 	if err := os.Symlink(outside, path); err != nil {
 		t.Fatal(err)
@@ -461,6 +484,81 @@ func TestMonitorDeniedStopsUntilSwitch(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if fake.postCount() != posts || len(monitor.Views()) != 1 {
 		t.Fatal("stopped monitor restarted")
+	}
+}
+
+func TestMonitorSameIDAcrossProvidersAndBack(t *testing.T) {
+	cfg := testConfig(t)
+	shared := "88888888-8888-4888-8888-888888888888"
+	writeCodex(t, cfg, shared, []map[string]any{codexMeta(shared, "paginated"), codexAgent("a1", "A payload.")})
+	writeClaude(t, cfg, shared, "B payload.")
+	sessions := transcript.DiscoverAll(cfg.SessionsRoot, cfg.ClaudeProjectsRoot, nil)
+	codexProvider, claudeProvider := domain.ProviderCodex, domain.ProviderClaude
+	codexSessionInfo, err := transcript.SelectSession(sessions, "codex:"+shared, &codexProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeSessionInfo, err := transcript.SelectSession(sessions, "claude:"+shared, &claudeProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitor(t, cfg, fake, listener)
+	monitor.Start(&codexSessionInfo)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && strings.Contains(views[0].DisplayText(), "A payload.")
+	})
+	monitor.Switch(claudeSessionInfo)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && views[0].Message.ThreadID == shared && strings.Contains(views[0].DisplayText(), "B payload.")
+	})
+	monitor.Switch(codexSessionInfo)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && strings.Contains(views[0].DisplayText(), "A payload.")
+	})
+	views := monitor.Views()
+	if strings.Contains(views[0].DisplayText(), "B payload.") {
+		t.Fatal("stale B applied after A")
+	}
+}
+
+func TestMonitorSwitchBackDropsInflightB(t *testing.T) {
+	cfg := testConfig(t)
+	writeCodex(t, cfg, "a", []map[string]any{codexMeta("a", "paginated"), codexAgent("a1", "A payload.")})
+	writeCodex(t, cfg, "b", []map[string]any{codexMeta("b", "paginated"), codexAgent("b1", "Slow B payload.")})
+	listener := &testListener{}
+	fake := &fakeTransport{gate: make(chan struct{}), gateText: "Slow B", started: make(chan string, 8)}
+	monitor := newMonitor(t, cfg, fake, listener)
+	sessionA := codexSession(t, cfg, "a")
+	sessionB := codexSession(t, cfg, "b")
+	monitor.Start(&sessionA)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views)
+	})
+	monitor.Switch(sessionB)
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case text := <-fake.started:
+			if strings.Contains(text, "Slow B") {
+				goto startedB
+			}
+		case <-deadline:
+			t.Fatal("B request did not start")
+		}
+	}
+startedB:
+	monitor.Switch(sessionA)
+	close(fake.gate)
+	time.Sleep(150 * time.Millisecond)
+	views := monitor.Views()
+	if len(views) != 1 || strings.Contains(views[0].DisplayText(), "Slow B") || !strings.Contains(views[0].DisplayText(), "A payload.") {
+		t.Fatalf("%+v", views)
 	}
 }
 

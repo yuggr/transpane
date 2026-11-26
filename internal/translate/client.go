@@ -106,7 +106,7 @@ type readTimeoutConn struct {
 
 func (c *readTimeoutConn) Read(buffer []byte) (int, error) {
 	if c.timeout > 0 {
-		_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+		_ = c.SetReadDeadline(time.Now().Add(c.timeout))
 	}
 	return c.Conn.Read(buffer)
 }
@@ -127,7 +127,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, failure(ErrorKindHTTP, response.StatusCode)
 	}
@@ -187,7 +187,7 @@ func (c *Client) Translate(ctx context.Context, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", failure(ErrorKindHTTP, response.StatusCode)
 	}

@@ -21,12 +21,14 @@ type resetMsg struct {
 	session *domain.SessionInfo
 	views   []monitor.View
 }
-type addedMsg struct{ view monitor.View }
-type prependedMsg struct{ views []monitor.View }
-type updatedMsg struct{ view monitor.View }
-type statusMsg struct{ status monitor.Status }
-type sessionsMsg struct{ sessions []domain.SessionInfo }
-type tickMsg time.Time
+type (
+	addedMsg     struct{ view monitor.View }
+	prependedMsg struct{ views []monitor.View }
+	updatedMsg   struct{ view monitor.View }
+	statusMsg    struct{ status monitor.Status }
+	sessionsMsg  struct{ sessions []domain.SessionInfo }
+	tickMsg      time.Time
+)
 
 type messageRange struct {
 	start int
@@ -49,19 +51,20 @@ type App struct {
 	monitor  *monitor.Monitor
 	messages chan tea.Msg
 
-	width        int
-	height       int
-	viewport     viewport.Model
-	views        []monitor.View
-	index        map[domain.MessageKey]int
-	ranges       []messageRange
-	status       monitor.Status
-	session      *domain.SessionInfo
-	originalMode bool
-	autoScroll   bool
-	picker       *pickerState
-	sessions     []domain.SessionInfo
-	emptyNote    string
+	width         int
+	height        int
+	viewport      viewport.Model
+	views         []monitor.View
+	index         map[domain.MessageKey]int
+	ranges        []messageRange
+	status        monitor.Status
+	session       *domain.SessionInfo
+	originalMode  bool
+	autoScroll    bool
+	picker        *pickerState
+	sessions      []domain.SessionInfo
+	emptyNote     string
+	pendingPicker bool
 }
 
 // New creates a viewer. The monitor is created in Init so tests can drive
@@ -145,7 +148,9 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		a.sessions = msg.sessions
 		a.emptyNote = ""
-		if a.picker == nil && a.session == nil {
+		openPicker := a.pendingPicker || (a.picker == nil && a.session == nil)
+		a.pendingPicker = false
+		if a.picker == nil && openPicker {
 			if len(a.sessions) == 0 {
 				a.emptyNote = "セッションが見つかりません。s で再検索できます。"
 			} else {
@@ -182,6 +187,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch key {
 	case "s":
+		a.pendingPicker = true
 		return a, a.discoverCmd()
 	case "o":
 		a.originalMode = !a.originalMode

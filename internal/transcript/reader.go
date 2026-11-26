@@ -285,7 +285,7 @@ func (r *Reader) Poll() PollResult {
 	if err != nil {
 		return PollResult{Missing: true}
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if _, err := file.Seek(consumed, io.SeekStart); err != nil {
 		return PollResult{}
 	}
@@ -359,7 +359,7 @@ func (r *Reader) ReadMessages(entries []domain.IndexEntry) ([]domain.Message, er
 	if err != nil {
 		return nil, &ReadError{Reason: "read"}
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	messages := make([]domain.Message, 0, len(entries))
 	for _, entry := range entries {
 		if _, err := file.Seek(entry.Start, io.SeekStart); err != nil {
