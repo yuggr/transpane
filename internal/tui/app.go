@@ -39,6 +39,7 @@ type messageRange struct {
 type pickerState struct {
 	selected int
 	top      int
+	key      domain.SessionKey
 }
 
 // App is the viewer model. Monitor events arrive as Bubble Tea messages.
@@ -154,11 +155,13 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if len(a.sessions) == 0 {
 				a.emptyNote = "セッションが見つかりません。s で再検索できます。"
 			} else {
-				a.picker = &pickerState{}
+				state := &pickerState{}
+				state.key = a.sessions[0].Key()
+				a.picker = state
 			}
-		} else if a.picker != nil && a.picker.selected >= len(a.sessions) {
-			a.picker.selected = 0
-			a.picker.top = 0
+		} else if a.picker != nil {
+			a.picker.restore(a.sessions)
+			a.adjustPicker()
 		}
 		return a, a.waitForEvent()
 	case tickMsg:
@@ -221,11 +224,13 @@ func (a *App) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if a.picker.selected > 0 {
 			a.picker.selected--
+			a.picker.key = a.sessions[a.picker.selected].Key()
 		}
 		a.adjustPicker()
 	case "down", "j":
 		if a.picker.selected+1 < len(a.sessions) {
 			a.picker.selected++
+			a.picker.key = a.sessions[a.picker.selected].Key()
 		}
 		a.adjustPicker()
 	case "enter":
@@ -242,6 +247,31 @@ func (a *App) handlePickerKey(key string) (tea.Model, tea.Cmd) {
 		}
 	}
 	return a, nil
+}
+
+// restore keeps the selected row's SessionKey when the candidate list refreshes.
+func (p *pickerState) restore(sessions []domain.SessionInfo) {
+	if len(sessions) == 0 {
+		p.selected = 0
+		p.top = 0
+		return
+	}
+	for index, session := range sessions {
+		if session.Key() == p.key {
+			p.selected = index
+			return
+		}
+	}
+	if p.selected >= len(sessions) {
+		p.selected = len(sessions) - 1
+	}
+	if p.selected < 0 {
+		p.selected = 0
+	}
+	p.key = sessions[p.selected].Key()
+	if p.top > p.selected {
+		p.top = p.selected
+	}
 }
 
 func (a *App) adjustPicker() {

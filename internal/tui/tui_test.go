@@ -126,6 +126,29 @@ func TestPickerShowsSameIDsAndKeepsRowIdentity(t *testing.T) {
 	}
 }
 
+func TestPickerKeepsSessionKeyAcrossRefresh(t *testing.T) {
+	app := newTestApp()
+	cwdA, cwdB, cwdC := "/tmp/a", "/tmp/b", "/tmp/c"
+	first := []domain.SessionInfo{
+		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/a", Cwd: &cwdA},
+		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/b", Cwd: &cwdB},
+	}
+	app.Update(sessionsMsg{sessions: first})
+	app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if app.picker.key.Path != "/b" {
+		t.Fatalf("key %+v", app.picker.key)
+	}
+	refreshed := []domain.SessionInfo{
+		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/c", Cwd: &cwdC},
+		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/a", Cwd: &cwdA},
+		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/b", Cwd: &cwdB},
+	}
+	app.Update(sessionsMsg{sessions: refreshed})
+	if app.picker.selected != 2 || app.picker.key.Path != "/b" {
+		t.Fatalf("selection not preserved: %+v", app.picker)
+	}
+}
+
 func TestScrollAnchorPreservedAcrossUpdate(t *testing.T) {
 	app := newTestApp()
 	views := []monitor.View{}
