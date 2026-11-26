@@ -52,7 +52,9 @@ jobs:
             echo "warning: binary reports dynamic dependencies"
           fi
           ./dist/transpane --version
-          tar -C dist -czf dist/transpane-linux-amd64.tar.gz transpane
+          cp LICENSE dist/LICENSE
+          cp README.md dist/README.md
+          tar -C dist -czf dist/transpane-linux-amd64.tar.gz transpane LICENSE README.md
           (cd dist && sha256sum transpane-linux-amd64.tar.gz > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:

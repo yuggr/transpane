@@ -103,7 +103,7 @@ func (a *App) doctorCache(cfg config.Config) bool {
 }
 
 func (a *App) doctorTranslation(ctx context.Context, cfg config.Config) bool {
-	writef(a.stdout(), "翻訳サーバー: %s / model=%s / form=%s\n", cfg.BaseURL, cfg.Model, cfg.Form)
+	writef(a.stdout(), "翻訳サーバー: %s / model=%s / form=%s\n", printable(cfg.BaseURL), printable(cfg.Model), printable(cfg.Form))
 	listModels := a.ListModels
 	if listModels == nil {
 		listModels = defaultListModels
@@ -121,13 +121,13 @@ func (a *App) doctorTranslation(ctx context.Context, cfg config.Config) bool {
 	writef(a.stdout(), "  [OK] 接続できました（モデル %d 件）\n", len(models))
 	for _, model := range models {
 		if model == cfg.Model {
-			writef(a.stdout(), "  [OK] モデル %s が見つかりました\n", cfg.Model)
+			writef(a.stdout(), "  [OK] モデル %s が見つかりました\n", printable(cfg.Model))
 			return true
 		}
 	}
-	writef(a.stdout(), "  [NG] モデル %s が /v1/models にありません\n", cfg.Model)
+	writef(a.stdout(), "  [NG] モデル %s が /v1/models にありません\n", printable(cfg.Model))
 	for _, model := range models {
-		writef(a.stdout(), "        - %s\n", model)
+		writef(a.stdout(), "        - %s\n", printable(model))
 	}
 	return false
 }
