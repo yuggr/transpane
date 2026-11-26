@@ -2,7 +2,7 @@
 
 STATUS: PARTIAL
 
-BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `ff694b5` (this branch; review fixes may add commits)
+BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `44d9b02` (this branch; review fixes included)
 
 PHASES:
 - Phase 0: complete — baseline pytest 219 passed, toolchain pinned (Go 1.27.4, golangci-lint 2.15.0, govulncheck v1.10.0), dependency smoke tests, synthetic oracle.
@@ -69,8 +69,8 @@ DIFFERENTIAL RESULTS / approved differences:
 
 TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go mod verify` → all modules verified.
-- `go test ./...` → 154 passed.
-- `CGO_ENABLED=1 go test -race ./...` → 154 passed.
+- `go test ./...` → 162 passed.
+- `CGO_ENABLED=1 go test -race ./...` → 162 passed.
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
@@ -78,8 +78,8 @@ TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w"` → static ELF.
 
 BINARY SIZE / CHECKSUM / RUNTIME DEPENDENCIES:
-- Size: 13,865,120 bytes (stripped, final build at `ff694b5`).
-- SHA-256: `35fb6d8e7d7699916ccb051d95be6e87fbea6c1f07d976f57d2099851514445c`.
+- Size: 13,869,216 bytes (stripped, final build at `44d9b02`).
+- SHA-256: `651d9d2d8a14f23a7ca06fc5d02d50c2121585862b8a3a1ee0f66b53ead5c3fe`.
 - `file` → ELF 64-bit LSB executable, x86-64, statically linked; `ldd` → not a dynamic executable.
 - Runtime: Linux amd64 only; no Go/Python/uv/system library requirement.
 
@@ -98,6 +98,15 @@ CACHE COMPATIBILITY / ROLLBACK:
 - Key algorithm and SQLite schema are Python-compatible (goldens + bidirectional synthetic DB check).
 - Go never deletes, replaces or chmod-repairs an existing DB; a wide-permission/corrupt/locked DB is disabled for the process.
 - Rollback to Python: fixed-commit worktree + `uv sync --locked` + `uv run transpane` (README). Existing DB remains usable by both.
+
+FRESH REVIEW / FIXES:
+- A fresh-context reviewer examined the branch and returned "With fixes".
+- Critical C1 (rebuild during in-flight reconnect left `reconnecting`/`retryAfterReconnect` set and stalled translation) is fixed; a deterministic 500→Retry→rebuild→stale GET→Retry→translated regression test was added.
+- Critical C2/C3 (unsanitized metadata, stale reconnect crossing generations) were already fixed before the review and re-verified; C1 was the residual.
+- Important I1 (empty `form`/`base_url` silently defaulted) is fixed with table tests.
+- Important I2/I3/I5 (picker key stability, TUI shutdown ordering, Python-created cache DB fixture) are fixed/tested.
+- Important I4 (missing invalid-marker/no-cache, 4xx vs 5xx state, partial-unit tests) is closed.
+- Minor items are documented as approved differences (IPv6 canonicalization, empty query, `~user`, backtick artifact, subcommand help text, timestamp variants); `created_at` now uses six digits when microseconds are non-zero.
 
 UNRESOLVED RISKS / NOT VERIFIED:
 - Real Codex/Claude transcript variants and real PLaMo model timing (G26) are unverified; PARTIAL by definition.
