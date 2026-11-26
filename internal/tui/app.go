@@ -91,9 +91,14 @@ func New(ctx context.Context, cfg config.Config, initial *domain.SessionInfo, cw
 
 // Run starts the TUI and restores the terminal when it exits.
 func Run(ctx context.Context, cfg config.Config, initial *domain.SessionInfo, cwd string, source *domain.Provider) error {
-	app := New(ctx, cfg, initial, cwd, source)
-	program := tea.NewProgram(app, tea.WithContext(ctx))
+	viewCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	app := New(viewCtx, cfg, initial, cwd, source)
+	program := tea.NewProgram(app, tea.WithContext(viewCtx))
 	_, err := program.Run()
+	// Stop event delivery before closing the monitor so a blocked listener
+	// send can never prevent shutdown.
+	cancel()
 	if app.monitor != nil {
 		_ = app.monitor.Close()
 	}
