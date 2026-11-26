@@ -38,10 +38,19 @@ type Listener interface {
 
 // Options injects test doubles and tuning values.
 type Options struct {
-	Client       *translate.Client
-	Cache        *cache.Cache
-	SchedulerMax int
-	PollInterval time.Duration
+	Client        *translate.Client
+	Cache         *cache.Cache
+	SchedulerMax  int
+	PollInterval  time.Duration
+	ReaderFactory func(domain.SessionInfo) reader
+}
+
+// reader is the bounded transcript reader used by the monitor. The concrete
+// implementation is *transcript.Reader; tests may substitute a scripted one.
+type reader interface {
+	ScanAll() (transcript.ScanResult, error)
+	Poll() transcript.PollResult
+	ReadMessages([]domain.IndexEntry) ([]domain.Message, error)
 }
 
 type switchRequest struct {
@@ -58,7 +67,7 @@ type closeRequest struct{ done chan struct{} }
 type readerRequest struct {
 	op         string
 	generation uint64
-	reader     *transcript.Reader
+	reader     reader
 	entries    []domain.IndexEntry
 	purpose    string
 	count      int
@@ -106,8 +115,9 @@ type Monitor struct {
 	done                 chan struct{}
 	workers              sync.WaitGroup
 
-	client *translate.Client
-	cache  *cache.Cache
+	client        *translate.Client
+	cache         *cache.Cache
+	readerFactory func(domain.SessionInfo) reader
 
 	currentGeneration atomic.Uint64
 	snapshotMu        sync.RWMutex
@@ -118,7 +128,7 @@ type Monitor struct {
 	generation          uint64
 	state               state
 	session             *domain.SessionInfo
-	reader              *transcript.Reader
+	reader              reader
 	entries             []domain.IndexEntry
 	positions           map[string]int
 	visible             int
@@ -181,6 +191,7 @@ func New(ctx context.Context, cfg config.Config, listener Listener, options Opti
 		connection:           ConnectionUnknown,
 		cacheStatus:          cacheInstance.Status(),
 		pollInterval:         interval,
+		readerFactory:        options.ReaderFactory,
 	}
 	monitor.genCtx, monitor.genCancel = context.WithCancel(child)
 	monitor.lastUpdate = time.Now().Format("15:04:05")
@@ -374,7 +385,11 @@ func (m *Monitor) handleSwitch(request switchRequest) {
 	m.connection = ConnectionUnknown
 	m.connectionError = ""
 	m.lastUpdate = time.Now().Format("15:04:05")
-	m.reader = transcript.ReaderForSession(*request.session, m.config.SessionsRoot, m.config.ClaudeProjectsRoot)
+	if m.readerFactory != nil {
+		m.reader = m.readerFactory(*request.session)
+	} else {
+		m.reader = transcript.ReaderForSession(*request.session, m.config.SessionsRoot, m.config.ClaudeProjectsRoot)
+	}
 	m.pendingSwitch = request.done
 	m.readerBusy = true
 	m.sendReader(readerRequest{
