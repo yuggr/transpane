@@ -250,10 +250,11 @@ PR #4 のレビュー指摘に基づき、以下の2件のみを修正した。�
 
 ### P2-01 再構築時の note 更新順序
 
-- `Monitor._read_snapshot` を `_scan_snapshot`（scan・検証・索引設定）と
-  `_read_snapshot_messages`（メッセージ読取）に分割し、`_rebuild`（および `switch`）が
-  スキャン成功後・`read_messages` 前に `_note` を設定する基点の順序へ戻した。
-- `SnapshotOutcome` に `selected` を追加し、scan と read の間で対象エントリを保持する。
+- `Monitor._read_snapshot` を `_scan_snapshot`（scan・検証）と
+  `_read_snapshot_messages`（索引設定・メッセージ読取）に分割し、`_rebuild`（および
+  `switch`）がスキャン成功後、索引設定と `read_messages` の前に `_note` を設定する
+  基点の順序へ戻した。
+- `SnapshotOutcome` に `scan` を追加し、scan と read の間でスキャン結果を保持する。
   generation、停止状態、例外分類、再構築契約は変更していない。
 - 回帰テスト: `test_rebuild_sets_note_before_reading_messages`
   （修正前コードで失敗することを確認済み）。
