@@ -2,7 +2,7 @@
 
 STATUS: PARTIAL
 
-BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `2ad1032` (PR #5 re-review fixes)
+BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `6b2eb6e` (PR #5 final fixes)
 
 PHASES:
 - Phase 0: complete — baseline pytest 219 passed, toolchain pinned (Go 1.27.4, golangci-lint 2.15.0, govulncheck v1.10.0), dependency smoke tests, synthetic oracle.
@@ -74,13 +74,13 @@ TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
-- GitHub Actions at code HEAD `2ad1032`: test / race / build jobs all pass (run 45947276910).
+- GitHub Actions at code HEAD `6b2eb6e`: test / race / build jobs all pass.
 - `govulncheck ./...` → No vulnerabilities found.
 - `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w"` → static ELF.
 
 BINARY SIZE / CHECKSUM / RUNTIME DEPENDENCIES:
-- Size: 13,881,504 bytes (stripped, final build at `2ad1032`).
-- SHA-256: `a830e37fe9a270329f3e5781d9961f3b127f964f74b5b537c70da521c34d3325`.
+- Size: 13,881,504 bytes (stripped, final build at `6b2eb6e`).
+- SHA-256: `1261c86a1065f9a61b7af3c79444eaa7222d48b8f699b9b3f59299d2a4e34cfc`.
 - `file` → ELF 64-bit LSB executable, x86-64, statically linked; `ldd` → not a dynamic executable.
 - Runtime: Linux amd64 only; no Go/Python/uv/system library requirement.
 
