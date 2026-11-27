@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -201,6 +202,8 @@ type blockingCache struct {
 	calls   int
 	entered chan struct{}
 	release chan struct{}
+	closed  chan struct{}
+	once    sync.Once
 }
 
 func (c *blockingCache) Get(string) (string, bool) {
@@ -216,7 +219,12 @@ func (c *blockingCache) Get(string) (string, bool) {
 }
 func (c *blockingCache) Put(string, string, string) {}
 func (c *blockingCache) Status() cache.Status       { return cache.Status{Available: true} }
-func (c *blockingCache) Close() error               { return nil }
+func (c *blockingCache) Close() error {
+	if c.closed != nil {
+		c.once.Do(func() { close(c.closed) })
+	}
+	return nil
+}
 
 func TestCancelDuringCacheLookupDoesNotPostOldGeneration(t *testing.T) {
 	cfg := testConfig(t)
@@ -329,6 +337,435 @@ func TestOldPollResultIsIgnoredAfterSwitch(t *testing.T) {
 	})
 	if len(monitor.Views()) != 1 {
 		t.Fatalf("stale poll applied: %+v", monitor.Views())
+	}
+}
+
+type statusCache struct {
+	mu     sync.Mutex
+	status cache.Status
+}
+
+func (c *statusCache) Get(string) (string, bool) {
+	c.mu.Lock()
+	c.status = cache.Status{Available: false, Path: "db", Message: "キャッシュDBがロックされています"}
+	c.mu.Unlock()
+	return "", false
+}
+func (c *statusCache) Put(string, string, string) {}
+func (c *statusCache) Status() cache.Status {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.status
+}
+func (c *statusCache) Close() error { return nil }
+
+func TestRevisionUpdateDuringCacheLookupDropsOldJob(t *testing.T) {
+	cfg := testConfig(t)
+	oldMessage := fakeMessage("t", "a1", "Old body.")
+	pollGate := make(chan struct{})
+	scripted := &scriptedReader{}
+	scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", oldMessage), nil }
+	scripted.readFn = func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+		return []domain.Message{oldMessage}, nil
+	}
+	scripted.pollFn = func(call int) transcript.PollResult {
+		if call == 1 {
+			<-pollGate
+			newMessage := fakeMessage("t", "a1", "New body.")
+			return transcript.PollResult{Messages: []domain.Message{newMessage}, Entries: []domain.IndexEntry{{ID: newMessage.ID, Revision: newMessage.Revision}}}
+		}
+		return transcript.PollResult{}
+	}
+	blocking := &blockingCache{entered: make(chan struct{}), release: make(chan struct{})}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client: client, Cache: blocking, PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(domain.SessionInfo) reader { return scripted },
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cache lookup did not start")
+	}
+	close(pollGate)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.Original == "New body."
+	})
+	close(blocking.release)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && views[0].State == domain.TranslationStateTranslated
+	})
+	fake.mu.Lock()
+	texts := append([]string(nil), fake.texts...)
+	fake.mu.Unlock()
+	for _, text := range texts {
+		if strings.Contains(text, "Old body.") {
+			t.Fatalf("old revision POSTed after cache lookup: %v", texts)
+		}
+	}
+	if pending := listener.lastStatus().Pending; pending != 0 {
+		t.Fatalf("pending accounting after revision change: %d", pending)
+	}
+}
+
+func TestOldRevisionFailureDoesNotPauseOrSendRemainingSegments(t *testing.T) {
+	cfg := testConfig(t)
+	oldMessage := fakeMessage("t", "a1", "Old first.\n\nOld second.")
+	pollGate := make(chan struct{})
+	scripted := &scriptedReader{}
+	scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", oldMessage), nil }
+	scripted.readFn = func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+		return []domain.Message{oldMessage}, nil
+	}
+	scripted.pollFn = func(call int) transcript.PollResult {
+		if call == 1 {
+			<-pollGate
+			newMessage := fakeMessage("t", "a1", "New body.")
+			return transcript.PollResult{Messages: []domain.Message{newMessage}, Entries: []domain.IndexEntry{{ID: newMessage.ID, Revision: newMessage.Revision}}}
+		}
+		return transcript.PollResult{}
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{
+		gate:     make(chan struct{}),
+		gateText: "Old first.",
+		started:  make(chan string, 8),
+		handler: func(text string) (int, string) {
+			if strings.Contains(text, "Old first.") {
+				return 500, "{}"
+			}
+			return 200, ""
+		},
+	}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client: client, PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(domain.SessionInfo) reader { return scripted },
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case text := <-fake.started:
+			if strings.Contains(text, "Old first.") {
+				goto startedOld
+			}
+		case <-deadline:
+			t.Fatal("old revision POST did not start")
+		}
+	}
+startedOld:
+	close(pollGate)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.Original == "New body."
+	})
+	close(fake.gate)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && views[0].State == domain.TranslationStateTranslated
+	})
+	fake.mu.Lock()
+	texts := append([]string(nil), fake.texts...)
+	fake.mu.Unlock()
+	for _, text := range texts {
+		if strings.Contains(text, "Old second.") {
+			t.Fatalf("old revision remaining segment sent: %v", texts)
+		}
+	}
+	if server := listener.lastStatus().Server; server == "通信失敗" {
+		t.Fatalf("old revision failure paused current generation: %+v", listener.lastStatus())
+	}
+	if pending := listener.lastStatus().Pending; pending != 0 {
+		t.Fatalf("pending accounting after old failure: %d", pending)
+	}
+}
+
+func TestInitialAndRebuildReadFailureCombinations(t *testing.T) {
+	cfg := testConfig(t)
+	t.Run("initial-index-mismatch-rebuilds", func(t *testing.T) {
+		scripted := &scriptedReader{}
+		scripted.scanFn = func(call int) (transcript.ScanResult, error) {
+			return fakeScan("t", fakeMessage("t", "a1", "one")), nil
+		}
+		scripted.readFn = func(call int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			if call == 1 {
+				return nil, &transcript.ReadError{Reason: "index_mismatch"}
+			}
+			return []domain.Message{fakeMessage("t", "a1", "one")}, nil
+		}
+		listener := &testListener{}
+		monitor := newMonitorWithReaders(t, cfg, &fakeTransport{}, listener, map[string]*scriptedReader{"t": scripted})
+		session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+		monitor.Start(&session)
+		waitUntil(t, 3*time.Second, func() bool {
+			views := monitor.Views()
+			return len(views) == 1 && views[0].Message.ID == "a1"
+		})
+		if scans, reads, _ := scripted.counts(); scans != 2 || reads != 2 {
+			t.Fatalf("scans=%d reads=%d", scans, reads)
+		}
+		if !listener.noteSeen("索引不一致") {
+			t.Fatal("rebuild note missing")
+		}
+	})
+
+	for _, item := range []struct {
+		name  string
+		build func(*scriptedReader)
+		note  string
+	}{
+		{
+			name: "initial-read-error",
+			build: func(scripted *scriptedReader) {
+				scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", fakeMessage("t", "a1", "one")), nil }
+				scripted.readFn = func(int, []domain.IndexEntry) ([]domain.Message, error) {
+					return nil, &transcript.ReadError{Reason: "read"}
+				}
+			},
+			note: "ログを読み取れません",
+		},
+		{
+			name: "rebuild-scan-error",
+			build: func(scripted *scriptedReader) {
+				scripted.scanFn = func(call int) (transcript.ScanResult, error) {
+					if call == 1 {
+						return fakeScan("t", fakeMessage("t", "a1", "one")), nil
+					}
+					return transcript.ScanResult{}, &transcript.SessionError{Message: "scan"}
+				}
+				scripted.readFn = func(int, []domain.IndexEntry) ([]domain.Message, error) {
+					return []domain.Message{fakeMessage("t", "a1", "one")}, nil
+				}
+				scripted.pollFn = func(call int) transcript.PollResult {
+					if call == 1 {
+						return transcript.PollResult{Rebuilt: true}
+					}
+					return transcript.PollResult{}
+				}
+			},
+			note: "ログを読み取れません（許可範囲外の可能性）",
+		},
+		{
+			name: "rebuild-read-error",
+			build: func(scripted *scriptedReader) {
+				scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", fakeMessage("t", "a1", "one")), nil }
+				scripted.readFn = func(call int, _ []domain.IndexEntry) ([]domain.Message, error) {
+					if call == 1 {
+						return []domain.Message{fakeMessage("t", "a1", "one")}, nil
+					}
+					return nil, &transcript.ReadError{Reason: "read"}
+				}
+				scripted.pollFn = func(call int) transcript.PollResult {
+					if call == 1 {
+						return transcript.PollResult{Rebuilt: true}
+					}
+					return transcript.PollResult{}
+				}
+			},
+			note: "ログを読み取れません",
+		},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			scripted := &scriptedReader{}
+			item.build(scripted)
+			listener := &testListener{}
+			monitor := newMonitorWithReaders(t, cfg, &fakeTransport{}, listener, map[string]*scriptedReader{"t": scripted})
+			session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+			monitor.Start(&session)
+			waitUntil(t, 3*time.Second, func() bool { return listener.noteSeen(item.note) })
+			if len(monitor.Views()) != 0 {
+				t.Fatalf("failure did not reset views: %+v", monitor.Views())
+			}
+			scans, reads, _ := scripted.counts()
+			monitor.Retry()
+			monitor.AddHistory()
+			time.Sleep(50 * time.Millisecond)
+			afterScans, afterReads, _ := scripted.counts()
+			if afterScans != scans || afterReads != reads {
+				t.Fatalf("stopped monitor restarted: scans %d->%d reads %d->%d", scans, afterScans, reads, afterReads)
+			}
+		})
+	}
+}
+
+func TestHistoryDeniedKeepsViewsAndBlocksRetry(t *testing.T) {
+	cfg := testConfig(t)
+	messages := []domain.Message{}
+	for index := 0; index < 60; index++ {
+		messages = append(messages, fakeMessage("t", fmt.Sprintf("a%02d", index), fmt.Sprintf("Message %d.", index)))
+	}
+	scripted := &scriptedReader{}
+	scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", messages...), nil }
+	scripted.readFn = func(call int, entries []domain.IndexEntry) ([]domain.Message, error) {
+		if call == 1 {
+			result := []domain.Message{}
+			for _, entry := range entries {
+				for _, message := range messages {
+					if message.ID == entry.ID {
+						result = append(result, message)
+					}
+				}
+			}
+			return result, nil
+		}
+		return nil, &transcript.ReadError{Reason: "denied"}
+	}
+	readerB := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("b", fakeMessage("b", "b1", "B payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("b", "b1", "B payload.")}, nil
+		},
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitorWithReaders(t, cfg, fake, listener, map[string]*scriptedReader{"t": scripted, "b": readerB})
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 50 && allSettled(views)
+	})
+	monitor.AddHistory()
+	waitUntil(t, 3*time.Second, func() bool { return listener.noteSeen("監視停止") })
+	if len(monitor.Views()) != 50 {
+		t.Fatalf("history denied reset views: %d", len(monitor.Views()))
+	}
+	scans, reads, _ := scripted.counts()
+	monitor.Retry()
+	monitor.AddHistory()
+	time.Sleep(50 * time.Millisecond)
+	afterScans, afterReads, _ := scripted.counts()
+	if afterScans != scans || afterReads != reads {
+		t.Fatalf("stopped history session restarted: scans %d->%d reads %d->%d", scans, afterScans, reads, afterReads)
+	}
+	sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+	monitor.Switch(sessionB)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.ID == "b1"
+	})
+}
+
+func TestRuntimeCacheFailureReachesStatus(t *testing.T) {
+	cfg := testConfig(t)
+	message := fakeMessage("t", "a1", "Body.")
+	scripted := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("t", message), nil },
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) { return []domain.Message{message}, nil },
+	}
+	instance := &statusCache{status: cache.Status{Available: true, Path: "db"}}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client: client, Cache: instance, PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(domain.SessionInfo) reader { return scripted },
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		return strings.Contains(listener.lastStatus().CacheNote, "ロック")
+	})
+}
+
+func TestCloseWaitsForShutdown(t *testing.T) {
+	cfg := testConfig(t)
+	instance := &blockingCache{entered: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
+	listener := &testListener{}
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client:       translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(&fakeTransport{})),
+		Cache:        instance,
+		PollInterval: 10 * time.Millisecond,
+	})
+	if err := monitor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-instance.closed:
+	default:
+		t.Fatal("Close returned before cache close")
+	}
+	if err := monitor.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSwitchKeepsServerPauseUntilExplicitReconnect(t *testing.T) {
+	cfg := testConfig(t)
+	readerA := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("a", fakeMessage("a", "a1", "Fail.")), nil },
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("a", "a1", "Fail.")}, nil
+		},
+	}
+	readerB := &scriptedReader{
+		scanFn: func(int) (transcript.ScanResult, error) {
+			return fakeScan("b", fakeMessage("b", "b1", "B payload.")), nil
+		},
+		readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+			return []domain.Message{fakeMessage("b", "b1", "B payload.")}, nil
+		},
+	}
+	listener := &testListener{}
+	fake := &fakeTransport{handler: func(text string) (int, string) {
+		if strings.Contains(text, "Fail.") {
+			return 503, "{}"
+		}
+		return 200, ""
+	}}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client:       client,
+		PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(session domain.SessionInfo) reader {
+			if session.ThreadID == "a" {
+				return readerA
+			}
+			return readerB
+		},
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	sessionA := domain.SessionInfo{ThreadID: "a", Provider: domain.ProviderCodex}
+	sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+	monitor.Start(&sessionA)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].State == domain.TranslationStateFailed && listener.lastStatus().Server == "通信失敗"
+	})
+	monitor.Switch(sessionB)
+	time.Sleep(100 * time.Millisecond)
+	views := monitor.Views()
+	if len(views) != 1 || len(views[0].Translations) != 0 {
+		t.Fatalf("switch resumed paused translation: %+v", views)
+	}
+	fake.mu.Lock()
+	texts := append([]string(nil), fake.texts...)
+	fake.mu.Unlock()
+	for _, text := range texts {
+		if strings.Contains(text, "B payload.") {
+			t.Fatalf("new session posted while paused: %v", texts)
+		}
+	}
+	monitor.Retry()
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].State == domain.TranslationStateTranslated
+	})
+	if fake.getCount() == 0 {
+		t.Fatal("retry did not reconnect")
 	}
 }
 

@@ -5,6 +5,7 @@ package cache
 
 import (
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,9 +38,20 @@ type Cache struct {
 // Open initializes the cache. A failure is reported through Status and the
 // instance stays disabled for its lifetime.
 func Open(path string) *Cache {
-	cache := &Cache{path: path, available: true}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return &Cache{path: path, available: false, message: "キャッシュを利用できません"}
+	}
+	cache := &Cache{path: filepath.Clean(absolute), available: true}
 	cache.initialize()
 	return cache
+}
+
+// sqliteDSN builds a SQLite URI with the path percent-encoded. Direct string
+// concatenation would let '?' or '#' change which file is opened.
+func sqliteDSN(path string) string {
+	uri := &url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=busy_timeout(500)"}
+	return uri.String()
 }
 
 func (c *Cache) Status() Status {
@@ -131,7 +143,7 @@ func (c *Cache) initialize() {
 		return
 	}
 
-	db, err := sql.Open("sqlite", "file:"+c.path+"?_pragma=busy_timeout(500)")
+	db, err := sql.Open("sqlite", sqliteDSN(c.path))
 	if err != nil {
 		c.disable("キャッシュを利用できません")
 		return

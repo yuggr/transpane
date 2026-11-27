@@ -25,6 +25,13 @@ type Job struct {
 	NextIndex int
 	Results   []SegmentResult
 	Ctx       context.Context
+	Cancel    context.CancelFunc
+}
+
+func (j *Job) cancel() {
+	if j.Cancel != nil {
+		j.Cancel()
+	}
 }
 
 type jobHeap []*Job
@@ -109,6 +116,39 @@ func (s *Scheduler) Complete(job *Job, requeue bool) {
 
 // CancelGeneration drops queued and deferred jobs at or below generation. An
 // in-flight job is left for its cancellation result and accounting release.
+// DropWhere removes queued/deferred jobs matching match, cancels them and
+// keeps active/deferred accounting consistent. An in-flight job is not removed
+// here; the monitor cancels it separately and releases it on its result.
+func (s *Scheduler) DropWhere(match func(*Job) bool) int {
+	removed := 0
+	kept := make(jobHeap, 0, len(s.queue))
+	for _, job := range s.queue {
+		if match(job) {
+			job.cancel()
+			if s.active > 0 {
+				s.active--
+			}
+			removed++
+			continue
+		}
+		kept = append(kept, job)
+	}
+	s.queue = kept
+	heap.Init(&s.queue)
+	deferred := make([]*Job, 0, len(s.deferred))
+	for _, job := range s.deferred {
+		if match(job) {
+			job.cancel()
+			removed++
+			continue
+		}
+		deferred = append(deferred, job)
+	}
+	s.deferred = deferred
+	s.promote()
+	return removed
+}
+
 func (s *Scheduler) CancelGeneration(generation uint64) {
 	kept := make(jobHeap, 0, len(s.queue))
 	for _, job := range s.queue {

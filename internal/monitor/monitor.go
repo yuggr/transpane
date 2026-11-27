@@ -70,7 +70,12 @@ type retryRequest struct{}
 
 type historyRequest struct{}
 
-type closeRequest struct{ done chan struct{} }
+type permissionRequest struct {
+	job   *Job
+	reply chan bool
+}
+
+type closeRequest struct{}
 
 type readerRequest struct {
 	op         string
@@ -101,6 +106,7 @@ type translationTask struct {
 type translationResponse struct {
 	job               *Job
 	generation        uint64
+	cacheStatus       *cache.Status
 	ok                bool
 	translated        string
 	errKind           string
@@ -275,16 +281,14 @@ func (m *Monitor) Session() *domain.SessionInfo {
 
 // Close stops workers and releases the cache.
 func (m *Monitor) Close() error {
-	done := make(chan struct{})
 	select {
-	case m.events <- closeRequest{done: done}:
-	case <-m.done:
-		return nil
-	}
-	select {
-	case <-done:
+	case m.events <- closeRequest{}:
+	case <-m.ctx.Done():
 	case <-m.done:
 	}
+	// m.done closes only after workers have joined and the client/cache have
+	// been closed by shutdown. Do not treat request receipt as completion.
+	<-m.done
 	return nil
 }
 
@@ -344,8 +348,9 @@ func (m *Monitor) loop() {
 				m.handleRetry()
 			case historyRequest:
 				m.handleHistory()
+			case permissionRequest:
+				m.handlePermission(request)
 			case closeRequest:
-				close(request.done)
 				return
 			}
 		case response := <-m.readerResponses:
@@ -391,9 +396,6 @@ func (m *Monitor) handleSwitch(request switchRequest) {
 	m.stopped = false
 	m.note = ""
 	m.state = stateLoading
-	m.paused = false
-	m.connection = ConnectionUnknown
-	m.connectionError = ""
 	m.resetGenerationTransient()
 	m.lastUpdate = time.Now().Format("15:04:05")
 	if m.readerFactory != nil {
@@ -507,13 +509,20 @@ func (m *Monitor) handleRead(response readerResponse) {
 				m.rebuild(m.generation, "索引不一致のため再構築しました")
 				return
 			}
-			if response.purpose == "history" && (readErr.Reason == "missing" || readErr.Reason == "read") {
+			if response.purpose == "history" {
 				if readErr.Reason == "missing" {
 					m.note = "ログ取得停止（ファイルが見つかりません）"
-				} else {
-					m.note = "ログを読み取れません"
+					m.emitStatus()
+					return
 				}
-				m.emitStatus()
+				if readErr.Reason == "read" {
+					m.note = "ログを読み取れません"
+					m.emitStatus()
+					return
+				}
+				// A denied/halted/unsupported history read keeps the current
+				// display; only explicit switch may recover.
+				m.stop(m.readErrorNote(readErr), false)
 				return
 			}
 			m.stop(m.readErrorNote(readErr), true)
@@ -574,6 +583,7 @@ func (m *Monitor) schedule(view *View, priority int) {
 	view.State = domain.TranslationStateQueued
 	for _, unit := range units {
 		view.Pending[unit.ID] = struct{}{}
+		ctx, cancel := context.WithCancel(m.genCtx)
 		job := &Job{
 			Ref: domain.TaskRef{
 				Session:    m.session.Key(),
@@ -584,7 +594,8 @@ func (m *Monitor) schedule(view *View, priority int) {
 			},
 			Segments: unit.Segments,
 			Priority: priority,
-			Ctx:      m.genCtx,
+			Ctx:      ctx,
+			Cancel:   cancel,
 		}
 		m.scheduler.Submit(job)
 	}
@@ -593,16 +604,50 @@ func (m *Monitor) schedule(view *View, priority int) {
 }
 
 func (m *Monitor) dispatch() {
-	if m.paused || m.reconnecting || m.scheduler.Inflight() != nil {
-		return
+	for {
+		if m.paused || m.reconnecting || m.scheduler.Inflight() != nil {
+			return
+		}
+		job := m.scheduler.Next()
+		if job == nil {
+			return
+		}
+		if !m.refCurrent(job.Ref) {
+			job.cancel()
+			m.scheduler.Complete(job, false)
+			continue
+		}
+		select {
+		case m.translationTasks <- translationTask{job: job}:
+			return
+		case <-m.ctx.Done():
+			job.cancel()
+			m.scheduler.Complete(job, false)
+			return
+		}
 	}
-	job := m.scheduler.Next()
-	if job == nil {
-		return
+}
+
+func (m *Monitor) handlePermission(request permissionRequest) {
+	allowed := !m.paused && !m.reconnecting && request.job == m.scheduler.Inflight() && m.refCurrent(request.job.Ref)
+	select {
+	case request.reply <- allowed:
+	case <-m.ctx.Done():
+	}
+}
+
+func (m *Monitor) requestPermission(ctx context.Context, job *Job) bool {
+	reply := make(chan bool, 1)
+	select {
+	case m.events <- permissionRequest{job: job, reply: reply}:
+	case <-ctx.Done():
+		return false
 	}
 	select {
-	case m.translationTasks <- translationTask{job: job}:
-	case <-m.ctx.Done():
+	case allowed := <-reply:
+		return allowed
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -615,15 +660,22 @@ func (m *Monitor) handleTranslationResponse(response translationResponse) {
 	if job == nil || job != m.scheduler.Inflight() {
 		return
 	}
-	current := job.Ref.Generation == m.generation && m.session != nil && job.Ref.Session == m.session.Key()
-	if !current {
+	if response.cacheStatus != nil {
+		if m.cacheStatus != *response.cacheStatus {
+			m.cacheStatus = *response.cacheStatus
+			defer m.emitStatus()
+		}
+	}
+	if !m.refCurrent(job.Ref) {
 		m.scheduler.Complete(job, false)
+		job.cancel()
 		m.dispatch()
 		m.emitStatus()
 		return
 	}
 	if !response.ok {
 		m.scheduler.Complete(job, false)
+		job.cancel()
 		view := m.resultView(job.Ref)
 		if view != nil {
 			delete(view.Pending, job.Ref.UnitID)
@@ -645,6 +697,13 @@ func (m *Monitor) handleTranslationResponse(response translationResponse) {
 
 	job.Results = append(job.Results, SegmentResult{OK: true, Text: response.translated})
 	job.NextIndex++
+	if !m.refCurrent(job.Ref) {
+		m.scheduler.Complete(job, false)
+		job.cancel()
+		m.emitStatus()
+		m.dispatch()
+		return
+	}
 	if job.NextIndex < len(job.Segments) {
 		m.scheduler.Complete(job, true)
 		m.emitStatus()
@@ -652,6 +711,7 @@ func (m *Monitor) handleTranslationResponse(response translationResponse) {
 		return
 	}
 	m.scheduler.Complete(job, false)
+	job.cancel()
 	combined := ""
 	for index, result := range job.Results {
 		combined += result.Text + job.Segments[index].Trailing
@@ -682,20 +742,37 @@ func (m *Monitor) applyFailure(kind string, status int) {
 	m.connection = ConnectionConnected
 }
 
-func (m *Monitor) resultView(ref domain.TaskRef) *View {
-	if m.stopped || m.session == nil || ref.Session != m.session.Key() {
-		return nil
+func (m *Monitor) refCurrent(ref domain.TaskRef) bool {
+	if m.stopped || m.session == nil || ref.Generation != m.generation || ref.Session != m.session.Key() {
+		return false
 	}
 	view, ok := m.views[ref.Message]
 	if !ok || view.Message.Revision != ref.Revision {
-		return nil
+		return false
 	}
 	for _, unit := range view.Doc.TranslatableUnits() {
 		if unit.ID == ref.UnitID {
-			return view
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+func (m *Monitor) resultView(ref domain.TaskRef) *View {
+	if !m.refCurrent(ref) {
+		return nil
+	}
+	return m.views[ref.Message]
+}
+
+func (m *Monitor) cancelRevisionJobs(threadID, messageID, revision string) {
+	match := func(job *Job) bool {
+		return job.Ref.Message.ThreadID == threadID && job.Ref.Message.ID == messageID && job.Ref.Revision == revision
+	}
+	if inflight := m.scheduler.Inflight(); inflight != nil && match(inflight) {
+		inflight.cancel()
+	}
+	m.scheduler.DropWhere(match)
 }
 
 func (m *Monitor) handleReconnect(response translationResponse) {
@@ -743,6 +820,7 @@ func (m *Monitor) requeueFailed() {
 		for _, unit := range failedUnits {
 			delete(view.Failed, unit.ID)
 			view.Pending[unit.ID] = struct{}{}
+			ctx, cancel := context.WithCancel(m.genCtx)
 			job := &Job{
 				Ref: domain.TaskRef{
 					Session:    m.session.Key(),
@@ -753,7 +831,8 @@ func (m *Monitor) requeueFailed() {
 				},
 				Segments: unit.Segments,
 				Priority: 0,
-				Ctx:      m.genCtx,
+				Ctx:      ctx,
+				Cancel:   cancel,
 			}
 			m.scheduler.Submit(job)
 		}
@@ -882,6 +961,7 @@ func (m *Monitor) ingest(messages []domain.Message, entries []domain.IndexEntry)
 }
 
 func (m *Monitor) updateView(view *View, message domain.Message, entry domain.IndexEntry) {
+	m.cancelRevisionJobs(view.Message.ThreadID, view.Message.ID, view.Message.Revision)
 	view.Message = message
 	view.Doc = protection.ProtectDocument(message.Original)
 	view.Translations = map[int]string{}
@@ -1096,8 +1176,12 @@ func (m *Monitor) translationLoop() {
 	}
 }
 
-func (m *Monitor) translateSegment(fallback context.Context, job *Job, memo map[string]string) translationResponse {
-	response := translationResponse{job: job}
+func (m *Monitor) translateSegment(fallback context.Context, job *Job, memo map[string]string) (response translationResponse) {
+	response = translationResponse{job: job}
+	defer func() {
+		status := m.cache.Status()
+		response.cacheStatus = &status
+	}()
 	if job.NextIndex >= len(job.Segments) {
 		response.errKind = string(translate.ErrorKindCancelled)
 		return response
@@ -1121,6 +1205,14 @@ func (m *Monitor) translateSegment(fallback context.Context, job *Job, memo map[
 		memo[key] = cached
 		response.ok = true
 		response.translated = cached
+		return response
+	}
+	if err := ctx.Err(); err != nil {
+		response.errKind = string(translate.ErrorKindCancelled)
+		return response
+	}
+	if !m.requestPermission(ctx, job) {
+		response.errKind = string(translate.ErrorKindCancelled)
 		return response
 	}
 	if err := ctx.Err(); err != nil {

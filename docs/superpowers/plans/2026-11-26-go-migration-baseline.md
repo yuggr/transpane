@@ -42,7 +42,7 @@ suite does not yet reproduce the exact interleaving.
   U+2028/U+2029, quotes/backslashes, control characters, `<>&/` and emoji.
 - Cache DB: a committed synthetic DB created by Python is read by Go in
   `internal/cache`; a Go-created DB was read by Python in manual verification.
-- Approved differences: port 0 is rejected (Python normalized it to 80),
+- Observed differences (approval pending): port 0 is rejected (Python normalized it to 80),
   IPv4-mapped IPv6 and zoned IPv6 are rejected, non-regular files are refused,
   and an unsupported mode discovered by poll stops translation immediately
   (fail closed).
@@ -52,11 +52,14 @@ suite does not yet reproduce the exact interleaving.
 `uv run ruff check .` and `uv run ruff format --check .` are recorded in the
 Phase 5 verification log (not used as a Go quality gate).
 
-## Approved differences and constraints
+## Observed differences requiring approval and constraints
 
 - Non-canonical IPv6 loopback (`[0:0:0:0:0:0:0:1]`) is canonicalized to `[::1]`;
   Python preserves the input text, so cache keys can differ for this configuration.
 - Empty query (`/v1?`) is rejected by Go but accepted by Python. Fail-closed.
+- Go uses Python-compatible Unicode `\s`, `\w` and `\b` semantics for secret and
+  protected-span detection. Unicode whitespace Bearer tokens and Unicode paths
+  are covered by the shared oracle fixture.
 - Port 0 is rejected by Go; Python normalized it to 80.
 - IPv4-mapped IPv6, zoned IPv6, non-regular files and symlinked session files are
   rejected by Go.
@@ -69,3 +72,5 @@ Phase 5 verification log (not used as a Go quality gate).
   per-subcommand text, while preserving exit 0.
 - Malformed ISO-8601 timestamp variants outside the accepted layouts render
   `時刻不明`; the baseline accepted a slightly wider set.
+- None of these differences is approved yet. They remain proposed compatibility
+  changes for the spec owner to accept or reject.

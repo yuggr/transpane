@@ -46,12 +46,12 @@ G01-G26:
 | G09 | PASS | Extractors/monitor: secret line skipped, only agent text reaches fake HTTP; tool/thinking ignored |
 | G10 | PASS | `internal/translate`: POST/GET shape, 4xx/5xx, invalid/empty/incomplete, timeout/connect, context cancel |
 | G11 | PASS | Proxy env ignored, redirect not followed, IP allowlist; TUI/CLI control-sequence stripping tests |
-| G12 | PASS* | Cache key Python goldens, perms/corrupt/lock/non-destructive; Python-created synthetic DB read by Go test; Go-created DB read by Python manually. A mid-life read-only transition is not separately automated. |
+| G12 | PASS* | Cache key Python goldens, perms/corrupt/lock/non-destructive, reserved-character URI paths; Python-created synthetic DB read by Go test; Go-created DB read by Python manually. A mid-life read-only transition is not separately automated. |
 | G13 | PASS | Scheduler tests: cache reuse, invalid marker not cached, memo, policy/model/form keys |
 | G14 | PASS | Scheduler tests: one worker, active≤32, deferred FIFO, priority/sequence, requeue, accounting |
 | G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, remaining-segment suppression |
 | G16 | PASS | Same ID across Codex/Claude, A→B→A, same-ID picker rows, stale in-flight B discarded |
-| G17 | PASS* | Old scan/read/poll results and reconnect results ignored after switch; remaining switch/rebuild index-mismatch/read-error combinations are covered but not exhaustively interleaved |
+| G17 | PASS* | Old scan/read/poll/reconnect results ignored; switch/rebuild with initial/rebuild index-mismatch/read-error combinations covered deterministically |
 | G18 | PASS | Denied and thread-change stop retained; retry/history blocked; explicit switch recovers |
 | G19 | PASS | Rebuild retry/history blocked, note→scan→read ordering, readback mismatch stop, stop reason retained |
 | G20 | PASS | Pause/reconnect rules, retained unsubmitted work, retry only failed units, 4xx vs 5xx classification |
@@ -62,7 +62,7 @@ G01-G26:
 | G25 | PASS | Static 13.8 MB binary, clean `env -i` `--version`/`doctor` without Go/Python/uv, SHA-256 |
 | G26 | NOT RUN | No real WSL Codex/Claude/PLaMo session was exercised; synthetic logs + mock HTTP only |
 
-DIFFERENTIAL RESULTS / approved differences:
+DIFFERENTIAL RESULTS / observed differences (approval pending):
 - Messages/offsets/revisions/kinds/stats/protection/cache keys match the Python oracle.
 - Deliberate fail-closed differences: port 0 rejected (Python normalizes to 80); IPv4-mapped IPv6, zoned IPv6 and non-regular files rejected; poll-discovered unsupported mode stops translation immediately; CLI/TUI strip control characters from metadata.
 - Markdown rendering is sanitized source text, not Textual pixel parity (allowed by spec).
@@ -99,6 +99,16 @@ CACHE COMPATIBILITY / ROLLBACK:
 - Go never deletes, replaces or chmod-repairs an existing DB; a wide-permission/corrupt/locked DB is disabled for the process.
 - Rollback to Python: fixed-commit worktree + `uv sync --locked` + `uv run transpane` (README). Existing DB remains usable by both.
 
+PR #5 REVIEW FOLLOW-UP:
+- P1-01 PASS: Python/RE2 `\s`, `\w`, `\b` differences are replaced by Unicode-aware classes and Python boundary checks; Unicode whitespace Bearer, Unicode path/function spans, oracle golden and HTTP non-send tests added.
+- P2-01 PASS: dispatch, post-cache permission and result handling validate TaskRef revision/unit; old revision jobs are cancelled/dropped; remaining segments suppressed; old failures cannot change pause/connection; accounting barrier tests added.
+- P2-02 PASS: session switch keeps the server pause; only a successful explicit reconnect GET resumes; stale reconnect results are discarded.
+- P2-03 PASS: SQLite DSN is percent-encoded and the same absolute path is checked and opened; `?`, `#`, `%` path tests added.
+- P2-04 PASS: the translation worker sends cache status snapshots with results; Monitor/TUI show runtime cache failures; no cross-goroutine cache field access.
+- P2-05 PASS: history denied/halted keeps existing views; initial/rebuild failures still reset; stop/retry/switch tests added.
+- P2-06 PASS: `Monitor.Close` waits for worker join plus client/cache close; no request-receipt shortcut; shutdown deadlock barriers.
+- G17 combinations, TUI scroll/picker/CJK checks: automated where possible; real terminal CJK confirmation remains part of G26.
+
 FRESH REVIEW / FIXES:
 - A fresh-context reviewer examined the branch and returned "With fixes".
 - Critical C1 (rebuild during in-flight reconnect left `reconnecting`/`retryAfterReconnect` set and stalled translation) is fixed; a deterministic 500→Retry→rebuild→stale GET→Retry→translated regression test was added.
@@ -106,7 +116,7 @@ FRESH REVIEW / FIXES:
 - Important I1 (empty `form`/`base_url` silently defaulted) is fixed with table tests.
 - Important I2/I3/I5 (picker key stability, TUI shutdown ordering, Python-created cache DB fixture) are fixed/tested.
 - Important I4 (missing invalid-marker/no-cache, 4xx vs 5xx state, partial-unit tests) is closed.
-- Minor items are documented as approved differences (IPv6 canonicalization, empty query, `~user`, backtick artifact, subcommand help text, timestamp variants); `created_at` now uses six digits when microseconds are non-zero.
+- Minor items are documented as observed differences requiring approval (IPv6 canonicalization, empty query, `~user`, backtick artifact, subcommand help text, timestamp variants); `created_at` now uses six digits when microseconds are non-zero.
 
 UNRESOLVED RISKS / NOT VERIFIED:
 - Real Codex/Claude transcript variants and real PLaMo model timing (G26) are unverified; PARTIAL by definition.

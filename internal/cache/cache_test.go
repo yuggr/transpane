@@ -183,3 +183,46 @@ func TestPythonCreatedDatabaseFixture(t *testing.T) {
 		t.Fatalf("%q %v", got, ok)
 	}
 }
+
+func TestReservedCharactersInCachePath(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "db?x#y%z.sqlite3")
+	cache := Open(path)
+	if status := cache.Status(); !status.Available {
+		t.Fatalf("unavailable: %s", status.Message)
+	}
+	cache.Put("key", "value", "now")
+	if got, ok := cache.Get("key"); !ok || got != "value" {
+		t.Fatalf("%q %v", got, ok)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("literal path was not created: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(directory, "db")); !os.IsNotExist(err) {
+		t.Fatal("reserved character truncated the path")
+	}
+	_ = cache.Close()
+
+	raw, err := sql.Open("sqlite", sqliteDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	var value string
+	if err := raw.QueryRow("SELECT translated FROM translations WHERE cache_key = ?", "key").Scan(&value); err != nil || value != "value" {
+		t.Fatalf("%q %v", value, err)
+	}
+
+	reopened := Open(path)
+	defer func() { _ = reopened.Close() }()
+	if got, ok := reopened.Get("key"); !ok || got != "value" {
+		t.Fatal("reopen through encoded URI lost value")
+	}
+}

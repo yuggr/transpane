@@ -109,3 +109,20 @@ func TestSchedulerCancelGeneration(t *testing.T) {
 		t.Fatalf("%+v", next)
 	}
 }
+
+func TestSchedulerDropWhereKeepsAccounting(t *testing.T) {
+	scheduler := NewScheduler(3)
+	for index := 0; index < 5; index++ {
+		scheduler.Submit(job(string(rune('a'+index)), 1, 0, 1))
+	}
+	if scheduler.Active() != 3 || scheduler.Deferred() != 2 {
+		t.Fatalf("setup active=%d deferred=%d", scheduler.Active(), scheduler.Deferred())
+	}
+	removed := scheduler.DropWhere(func(j *Job) bool { return j.Ref.Message.ID == "b" || j.Ref.Message.ID == "e" })
+	if removed != 2 {
+		t.Fatalf("removed=%d", removed)
+	}
+	if scheduler.Active() != 3 || scheduler.Deferred() != 0 || scheduler.Pending() != 3 {
+		t.Fatalf("accounting active=%d deferred=%d pending=%d", scheduler.Active(), scheduler.Deferred(), scheduler.Pending())
+	}
+}

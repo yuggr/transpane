@@ -185,9 +185,62 @@
             "trailing": ""
           }
         ]
+      },
+      {
+        "id": 4,
+        "line": 11,
+        "prefix": "",
+        "suffix": "",
+        "source": "Use token Bearer sk-abcdefghijklmnopqrstuvwx and keep it secret.",
+        "markers": [],
+        "skip": "secret",
+        "conservative": false,
+        "segments": []
+      },
+      {
+        "id": 5,
+        "line": 13,
+        "prefix": "",
+        "suffix": "",
+        "source": "Edit src/é/foo.py before merging.",
+        "markers": [
+          "src/é/foo.py"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Edit @@CJ0@@ before merging.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "line": 15,
+        "prefix": "",
+        "suffix": "",
+        "source": "Call café_work() before shipping.",
+        "markers": [
+          "café_work()"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Call @@CJ0@@ before shipping.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
       }
     ],
-    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n"
+    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n\nUse token Bearer sk-abcdefghijklmnopqrstuvwx and keep it secret.\n\nEdit src/é/foo.py before merging.\n\nCall café_work() before shipping.\n"
   },
   "cache_keys": {
     "hello": "8f1899a2a426e162b566d6a00f2e975b4da89ce0a3af98a0a67edf17563db380",

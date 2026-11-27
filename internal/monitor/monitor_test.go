@@ -654,14 +654,20 @@ func TestStaleReconnectResultIgnoredAfterSwitch(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("reconnect did not finish")
 	}
-	waitUntil(t, 3*time.Second, func() bool {
-		views := monitor.Views()
-		return len(views) == 1 && allSettled(views)
-	})
 	time.Sleep(50 * time.Millisecond)
 	if strings.Contains(listener.lastStatus().Note, "再接続") {
 		t.Fatalf("stale reconnect changed new session note: %+v", listener.lastStatus())
 	}
+	fake.mu.Lock()
+	fake.getFail = false
+	fake.getGate = nil
+	fake.getDone = nil
+	fake.mu.Unlock()
+	monitor.Retry()
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views)
+	})
 }
 
 func TestMonitorInvalidMarkerIsNotCached(t *testing.T) {
@@ -750,6 +756,44 @@ func TestMonitorPartialUnitFailure(t *testing.T) {
 	view := monitor.Views()[0]
 	if view.State != domain.TranslationStatePartial || len(view.Translations) != 1 || len(view.Failed) != 1 {
 		t.Fatalf("partial state %+v", view)
+	}
+}
+
+func TestMonitorUnicodeSecretNotSent(t *testing.T) {
+	cfg := testConfig(t)
+	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Use token Bearer\u00a0sk-abcdefghijklmnopqrstuvwx now.")})
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitor(t, cfg, fake, listener)
+	session := codexSession(t, cfg, "t")
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool { return len(monitor.Views()) == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if fake.postCount() != 0 {
+		t.Fatalf("Unicode-space secret sent: %d", fake.postCount())
+	}
+}
+
+func TestMonitorUnicodePathProtectedOverHTTP(t *testing.T) {
+	cfg := testConfig(t)
+	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Edit src/é/foo.py before merging.")})
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitor(t, cfg, fake, listener)
+	session := codexSession(t, cfg, "t")
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views)
+	})
+	fake.mu.Lock()
+	texts := append([]string(nil), fake.texts...)
+	fake.mu.Unlock()
+	if len(texts) != 1 {
+		t.Fatalf("posts %+v", texts)
+	}
+	if strings.Contains(texts[0], "src/é/foo.py") || !strings.Contains(texts[0], "@@CJ0@@") {
+		t.Fatalf("Unicode path not protected: %q", texts[0])
 	}
 }
 
