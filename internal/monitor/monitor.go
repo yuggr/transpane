@@ -684,6 +684,15 @@ func (m *Monitor) handleTranslationResponse(response translationResponse) {
 	if job == nil || job != m.scheduler.Inflight() {
 		return
 	}
+	// Cache health is session-independent shared state. Update it even when
+	// the job is cancelled, but keep the cancelled job's translation/UI,
+	// pause and connection effects out of the new generation.
+	if response.cacheStatus != nil {
+		if m.cacheStatus != *response.cacheStatus {
+			m.cacheStatus = *response.cacheStatus
+			defer m.emitStatus()
+		}
+	}
 	if job.cancelled() {
 		// A cancelled job from an older revision may still match the current
 		// revision string after A→B→A. Only release its accounting.
@@ -691,12 +700,6 @@ func (m *Monitor) handleTranslationResponse(response translationResponse) {
 		m.dispatch()
 		m.emitStatus()
 		return
-	}
-	if response.cacheStatus != nil {
-		if m.cacheStatus != *response.cacheStatus {
-			m.cacheStatus = *response.cacheStatus
-			defer m.emitStatus()
-		}
 	}
 	if !m.refCurrent(job.Ref) {
 		m.scheduler.Complete(job, false)

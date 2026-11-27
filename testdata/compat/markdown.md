@@ -20,3 +20,5 @@ Use sk-abcdefghijklmnopqrstuvwx- now.
 Open data.pyi now.
 
 Edit src/foo- before merging.
+
+Edit src/.github/workflows/check.yml now.

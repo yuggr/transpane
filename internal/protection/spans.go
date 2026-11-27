@@ -156,7 +156,7 @@ var inlinePatterns = []textPattern{
 	{regex: regexp.MustCompile(`\.{0,2}/[` + pythonWordBody + `./%~+\-]+`), context: func(r rune) bool {
 		return isWordRune(r) || r == '.'
 	}},
-	{regex: regexp.MustCompile(pythonWord + `[\p{L}\p{N}_.\-]*(?:/` + pythonWord + `[\p{L}\p{N}_.\-]*)+`), startBoundary: true, endBoundary: true},
+	{regex: regexp.MustCompile(`[\p{L}\p{N}_.\-]+(?:/[\p{L}\p{N}_.\-]+)+`), startBoundary: true, endBoundary: true},
 	{regex: regexp.MustCompile(pythonWord + `[\p{L}\p{N}_\-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|jsonl|toml|yaml|yml|md|txt|rs|go|java|kt|c|h|cc|cpp|hpp|sh|bash|zsh|fish|sql|html|css|scss|ini|cfg|conf|lock|xml|gradle|mod|sum|env)`), startBoundary: true, endBoundary: true},
 	{regex: regexp.MustCompile(`[A-Za-z_]` + pythonWord + `*(?:\.` + `[A-Za-z_]` + pythonWord + `*)*\(\)`), startBoundary: true},
 	{regex: regexp.MustCompile(`[A-Za-z]` + pythonWord + `*_` + pythonWord + `+`), startBoundary: true, endBoundary: true},

@@ -291,9 +291,30 @@
             "trailing": ""
           }
         ]
+      },
+      {
+        "id": 10,
+        "line": 23,
+        "prefix": "",
+        "suffix": "",
+        "source": "Edit src/.github/workflows/check.yml now.",
+        "markers": [
+          "src/.github/workflows/check.yml"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Edit @@CJ0@@ now.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
       }
     ],
-    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n\nUse token Bearer ZYXWVUTSRQPONMLKJIHGFEDCBA and keep it secret.\n\nEdit src/é/foo.py before merging.\n\nCall café_work() before shipping.\n\nUse sk-abcdefghijklmnopqrstuvwx- now.\n\nOpen data.pyi now.\n\nEdit src/foo- before merging.\n"
+    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n\nUse token Bearer ZYXWVUTSRQPONMLKJIHGFEDCBA and keep it secret.\n\nEdit src/é/foo.py before merging.\n\nCall café_work() before shipping.\n\nUse sk-abcdefghijklmnopqrstuvwx- now.\n\nOpen data.pyi now.\n\nEdit src/foo- before merging.\n\nEdit src/.github/workflows/check.yml now.\n"
   },
   "cache_keys": {
     "hello": "8f1899a2a426e162b566d6a00f2e975b4da89ce0a3af98a0a67edf17563db380",

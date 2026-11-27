@@ -51,7 +51,7 @@ G01-G26:
 | G14 | PASS | Scheduler tests: one worker, active≤32, deferred FIFO, priority/sequence, requeue, accounting |
 | G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, remaining-segment suppression |
 | G16 | PASS | Same ID across Codex/Claude, A→B→A, same-ID picker rows, stale in-flight B discarded |
-| G17 | PASS* | Old scan/read/poll/reconnect results ignored; switch/rebuild × index_mismatch/read_error four combinations covered deterministically |
+| G17 | PASS* | Old scan/read/poll/reconnect results ignored. Switch-initial × index_mismatch/read_error and rebuild × index_mismatch/read_error each have deterministic tests (`TestSwitchInitialReadFailureCombinations`, `TestInitialAndRebuildReadFailureCombinations`, `TestRebuildReadFailureStopsAndBlocksRetry`). Cross-generation interleavings beyond these barriers are not exhaustively enumerated. |
 | G18 | PASS | Denied and thread-change stop retained; retry/history blocked; explicit switch recovers |
 | G19 | PASS | Rebuild retry/history blocked, note→scan→read ordering, readback mismatch stop, stop reason retained |
 | G20 | PASS | Pause/reconnect rules, retained unsubmitted work, retry only failed units, 4xx vs 5xx classification |
@@ -69,8 +69,8 @@ DIFFERENTIAL RESULTS / observed differences (approval pending):
 
 TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go mod verify` → all modules verified.
-- `go test ./...` → 188 passed.
-- `CGO_ENABLED=1 go test -race ./...` → 188 passed.
+- `go test ./...` → 194 passed.
+- `CGO_ENABLED=1 go test -race ./...` → 194 passed.
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
@@ -109,7 +109,9 @@ PR #5 REVIEW FOLLOW-UP (HEAD `2ad1032`):
 - P2-05 PASS: history denied/halted keeps existing views; initial/rebuild failures still reset; stop/retry/switch tests added.
 - P2-06 PASS: `Monitor.Close` waits for worker join plus client/cache close; no request-receipt shortcut; shutdown deadlock barriers.
 - P2-07 PASS: `h` requests received while a poll/read is in progress are queued and executed after the reader completes; Loading/Rebuilding/Stopped still suppress requests. Deterministic poll-blocked AddHistory barrier test added; public `AddHistory` remains non-blocking to avoid listener-backpressure deadlock.
-- G17 combinations: all four switch/rebuild × index_mismatch/read_error combinations are covered. TUI code was not changed in this round; its existing fold/picker tests remain, and real-terminal CJK confirmation remains part of G26.
+- P2-08 PASS: cache status is updated before the cancelled-job check, so a cache failure is reported even when the job is discarded. Cancelled jobs still cannot change translation, Pending, Failed, pause or connection state; a direct barrier test verifies this split.
+- P2-09 PASS: path component classes now match Python `[\w.-]+`, including dot-prefixed components; `src/.github/workflows/check.yml` is protected as a whole. Oracle fixture and HTTP non-send test added.
+- G17: the four switch/rebuild × index_mismatch/read_error cases have deterministic tests; stale scan/read/poll/reconnect are covered separately. Other cross-generation interleavings are not claimed as PASS. TUI code was not changed in this round; its existing fold/picker tests remain, and real-terminal CJK confirmation remains part of G26.
 
 FRESH REVIEW / FIXES:
 - A fresh-context reviewer examined the branch and returned "With fixes".

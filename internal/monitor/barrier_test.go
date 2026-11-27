@@ -554,6 +554,73 @@ startedOld:
 	}
 }
 
+func TestSwitchInitialReadFailureCombinations(t *testing.T) {
+	cfg := testConfig(t)
+	for _, item := range []struct {
+		name     string
+		build    func(*scriptedReader)
+		wantView bool
+		note     string
+	}{
+		{
+			name: "index-mismatch-rebuilds",
+			build: func(scripted *scriptedReader) {
+				scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("b", fakeMessage("b", "b1", "B body.")), nil }
+				scripted.readFn = func(call int, _ []domain.IndexEntry) ([]domain.Message, error) {
+					if call == 1 {
+						return nil, &transcript.ReadError{Reason: "index_mismatch"}
+					}
+					return []domain.Message{fakeMessage("b", "b1", "B body.")}, nil
+				}
+			},
+			wantView: true,
+			note:     "索引不一致",
+		},
+		{
+			name: "read-error-stops",
+			build: func(scripted *scriptedReader) {
+				scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("b", fakeMessage("b", "b1", "B body.")), nil }
+				scripted.readFn = func(int, []domain.IndexEntry) ([]domain.Message, error) {
+					return nil, &transcript.ReadError{Reason: "read"}
+				}
+			},
+			wantView: false,
+			note:     "ログを読み取れません",
+		},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			readerA := &scriptedReader{
+				scanFn: func(int) (transcript.ScanResult, error) { return fakeScan("a", fakeMessage("a", "a1", "A body.")), nil },
+				readFn: func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+					return []domain.Message{fakeMessage("a", "a1", "A body.")}, nil
+				},
+			}
+			readerB := &scriptedReader{}
+			item.build(readerB)
+			listener := &testListener{}
+			fake := &fakeTransport{}
+			monitor := newMonitorWithReaders(t, cfg, fake, listener, map[string]*scriptedReader{"a": readerA, "b": readerB})
+			sessionA := domain.SessionInfo{ThreadID: "a", Provider: domain.ProviderCodex}
+			sessionB := domain.SessionInfo{ThreadID: "b", Provider: domain.ProviderCodex}
+			monitor.Start(&sessionA)
+			waitUntil(t, 3*time.Second, func() bool {
+				views := monitor.Views()
+				return len(views) == 1 && views[0].Message.ID == "a1"
+			})
+			monitor.Switch(sessionB)
+			waitUntil(t, 3*time.Second, func() bool { return listener.noteSeen(item.note) })
+			views := monitor.Views()
+			if item.wantView {
+				if len(views) != 1 || views[0].Message.ID != "b1" {
+					t.Fatalf("switch rebuild failed: %+v", views)
+				}
+			} else if len(views) != 0 {
+				t.Fatalf("switch read error did not reset: %+v", views)
+			}
+		})
+	}
+}
+
 func TestInitialAndRebuildReadFailureCombinations(t *testing.T) {
 	cfg := testConfig(t)
 	t.Run("initial-index-mismatch-rebuilds", func(t *testing.T) {
@@ -791,6 +858,57 @@ func TestRuntimeCacheFailureReachesStatus(t *testing.T) {
 	waitUntil(t, 3*time.Second, func() bool {
 		return strings.Contains(listener.lastStatus().CacheNote, "ロック")
 	})
+}
+
+func TestCancelledJobStillReportsSharedCacheFailure(t *testing.T) {
+	message := domain.Message{ThreadID: "t", ID: "a1", Revision: "r", Kind: domain.MessageKindAssistant, Original: "Body."}
+	view := newView(message)
+	view.Pending[0] = struct{}{}
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	listener := &testListener{}
+	monitor := &Monitor{
+		ctx:              context.Background(),
+		scheduler:        NewScheduler(1),
+		session:          &session,
+		generation:       1,
+		state:            stateWatching,
+		views:            map[domain.MessageKey]*View{{ThreadID: "t", ID: "a1"}: &view},
+		order:            []domain.MessageKey{{ThreadID: "t", ID: "a1"}},
+		positions:        map[string]int{},
+		cacheStatus:      cache.Status{Available: true, Path: "db"},
+		connection:       ConnectionConnected,
+		listener:         listener,
+		translationTasks: make(chan translationTask, 1),
+		lastUpdate:       "00:00:00",
+	}
+	unit := view.Doc.TranslatableUnits()[0]
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	job := &Job{
+		Ref: domain.TaskRef{
+			Session: session.Key(), Generation: 1,
+			Message: domain.MessageKey{ThreadID: "t", ID: "a1"}, Revision: "r", UnitID: unit.ID,
+		},
+		Segments: unit.Segments,
+		Ctx:      ctx,
+		Cancel:   cancel,
+	}
+	monitor.scheduler.Submit(job)
+	if got := monitor.scheduler.Next(); got != job {
+		t.Fatal("job not in flight")
+	}
+	status := cache.Status{Available: false, Path: "db", Message: "キャッシュDBがロックされています"}
+	monitor.handleTranslationResponse(translationResponse{job: job, cacheStatus: &status})
+	if monitor.cacheStatus.Available || !strings.Contains(listener.lastStatus().CacheNote, "ロック") {
+		t.Fatalf("shared cache failure not reported: %+v %+v", monitor.cacheStatus, listener.lastStatus())
+	}
+	current := monitor.Views()
+	if len(current) != 1 || len(current[0].Translations) != 0 || len(current[0].Failed) != 0 || len(current[0].Pending) != 1 {
+		t.Fatalf("cancelled job changed view state: %+v", current)
+	}
+	if monitor.paused || monitor.connection != ConnectionConnected {
+		t.Fatalf("cancelled job changed connection: paused=%v connection=%v", monitor.paused, monitor.connection)
+	}
 }
 
 func TestCloseWaitsForShutdown(t *testing.T) {

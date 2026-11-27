@@ -46,3 +46,18 @@ func TestUnicodeBearerUsesNonOverlappingToken(t *testing.T) {
 		t.Fatalf("%+v", doc.Units)
 	}
 }
+
+func TestDotComponentsInPathAreProtected(t *testing.T) {
+	cases := map[string]string{
+		"Edit src/.github/workflows/check.yml now.\n": "src/.github/workflows/check.yml",
+		"Open .github/workflows/check.yml now.\n":     "github/workflows/check.yml",
+		"Edit ./src/.config/app.yaml now.\n":          "./src/.config/app.yaml",
+	}
+	for source, marker := range cases {
+		doc := ProtectDocument(source)
+		unit := doc.Units[0]
+		if len(unit.Markers) != 1 || unit.Markers[0] != marker {
+			t.Fatalf("%q: markers %+v want %q", source, unit.Markers, marker)
+		}
+	}
+}

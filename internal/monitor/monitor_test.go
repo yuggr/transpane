@@ -812,6 +812,26 @@ func TestMonitorUnicodePathProtectedOverHTTP(t *testing.T) {
 	}
 }
 
+func TestMonitorDotPathProtectedOverHTTP(t *testing.T) {
+	cfg := testConfig(t)
+	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Edit src/.github/workflows/check.yml now.")})
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitor(t, cfg, fake, listener)
+	session := codexSession(t, cfg, "t")
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views)
+	})
+	fake.mu.Lock()
+	texts := append([]string(nil), fake.texts...)
+	fake.mu.Unlock()
+	if len(texts) != 1 || strings.Contains(texts[0], "src/.github") || !strings.Contains(texts[0], "@@CJ0@@") {
+		t.Fatalf("dot path not protected: %+v", texts)
+	}
+}
+
 func TestMonitorSameTextUsesCache(t *testing.T) {
 	cfg := testConfig(t)
 	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Same."), codexAgent("a2", "Same.")})
