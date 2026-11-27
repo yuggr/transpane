@@ -2,7 +2,7 @@
 
 STATUS: PARTIAL
 
-BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `44d9b02` (this branch; review fixes included)
+BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `7b7201d` (PR #5 review fixes)
 
 PHASES:
 - Phase 0: complete — baseline pytest 219 passed, toolchain pinned (Go 1.27.4, golangci-lint 2.15.0, govulncheck v1.10.0), dependency smoke tests, synthetic oracle.
@@ -25,7 +25,7 @@ CHANGED FILES / ARCHITECTURE:
 - Python source/tests remain untouched at the baseline as the oracle. No Python file was changed.
 
 PYTHON BASELINE RESULTS + CONTRACT MAPPING:
-- `uv sync --locked && uv run pytest -q` → **219 passed**.
+- `uv sync --locked && uv run pytest -q` → **219 passed** (one timing-sensitive Claude UI test failed once and passed on rerun; Python tests were not modified).
 - Node IDs: `docs/superpowers/plans/2026-11-26-python-baseline-nodes.txt`.
 - Module mapping and replacement rationale: `docs/superpowers/plans/2026-11-26-go-migration-baseline.md`.
 - Python ruff baseline: `oracle.py` passes; three pre-existing Markdown documents are reported by `ruff format --check` (pre-existing, not part of Go CI).
@@ -69,8 +69,8 @@ DIFFERENTIAL RESULTS / observed differences (approval pending):
 
 TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go mod verify` → all modules verified.
-- `go test ./...` → 162 passed.
-- `CGO_ENABLED=1 go test -race ./...` → 162 passed.
+- `go test ./...` → 181 passed.
+- `CGO_ENABLED=1 go test -race ./...` → 181 passed.
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
@@ -78,8 +78,8 @@ TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w"` → static ELF.
 
 BINARY SIZE / CHECKSUM / RUNTIME DEPENDENCIES:
-- Size: 13,869,216 bytes (stripped, final build at `44d9b02`).
-- SHA-256: `651d9d2d8a14f23a7ca06fc5d02d50c2121585862b8a3a1ee0f66b53ead5c3fe`.
+- Size: 13,881,504 bytes (stripped, final build at `7b7201d`).
+- SHA-256: `09c36572811958e88fca6858f9d88f133e2d26966c67fcdcf947a8ff775fcf76`.
 - `file` → ELF 64-bit LSB executable, x86-64, statically linked; `ldd` → not a dynamic executable.
 - Runtime: Linux amd64 only; no Go/Python/uv/system library requirement.
 
@@ -99,7 +99,7 @@ CACHE COMPATIBILITY / ROLLBACK:
 - Go never deletes, replaces or chmod-repairs an existing DB; a wide-permission/corrupt/locked DB is disabled for the process.
 - Rollback to Python: fixed-commit worktree + `uv sync --locked` + `uv run transpane` (README). Existing DB remains usable by both.
 
-PR #5 REVIEW FOLLOW-UP:
+PR #5 REVIEW FOLLOW-UP (HEAD `7b7201d`):
 - P1-01 PASS: Python/RE2 `\s`, `\w`, `\b` differences are replaced by Unicode-aware classes and Python boundary checks; Unicode whitespace Bearer, Unicode path/function spans, oracle golden and HTTP non-send tests added.
 - P2-01 PASS: dispatch, post-cache permission and result handling validate TaskRef revision/unit; old revision jobs are cancelled/dropped; remaining segments suppressed; old failures cannot change pause/connection; accounting barrier tests added.
 - P2-02 PASS: session switch keeps the server pause; only a successful explicit reconnect GET resumes; stale reconnect results are discarded.
