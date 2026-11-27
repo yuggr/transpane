@@ -415,6 +415,70 @@ func TestRevisionUpdateDuringCacheLookupDropsOldJob(t *testing.T) {
 	}
 }
 
+func TestRevisionABARejectsCancelledJob(t *testing.T) {
+	cfg := testConfig(t)
+	messageA := fakeMessage("t", "a1", "A body.")
+	messageB := fakeMessage("t", "a1", "B body.")
+	pollCall := 0
+	var pollMu sync.Mutex
+	scripted := &scriptedReader{}
+	scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", messageA), nil }
+	scripted.readFn = func(_ int, _ []domain.IndexEntry) ([]domain.Message, error) {
+		return []domain.Message{messageA}, nil
+	}
+	scripted.pollFn = func(int) transcript.PollResult {
+		pollMu.Lock()
+		defer pollMu.Unlock()
+		pollCall++
+		switch pollCall {
+		case 1:
+			return transcript.PollResult{Messages: []domain.Message{messageB}, Entries: []domain.IndexEntry{{ID: messageB.ID, Revision: messageB.Revision}}}
+		case 2:
+			return transcript.PollResult{Messages: []domain.Message{messageA}, Entries: []domain.IndexEntry{{ID: messageA.ID, Revision: messageA.Revision}}}
+		default:
+			return transcript.PollResult{}
+		}
+	}
+	blocking := &blockingCache{entered: make(chan struct{}), release: make(chan struct{})}
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	client := translate.NewClient(cfg.BaseURL, cfg.Model, cfg.Form, translate.WithTransport(fake))
+	monitor := New(context.Background(), cfg, listener, Options{
+		Client: client, Cache: blocking, PollInterval: 10 * time.Millisecond,
+		ReaderFactory: func(domain.SessionInfo) reader { return scripted },
+	})
+	t.Cleanup(func() { _ = monitor.Close() })
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("old A cache lookup did not start")
+	}
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.Original == "B body."
+	})
+	waitUntil(t, 3*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && views[0].Message.Original == "A body."
+	})
+	close(blocking.release)
+	waitUntil(t, 5*time.Second, func() bool {
+		views := monitor.Views()
+		return len(views) == 1 && allSettled(views) && views[0].State == domain.TranslationStateTranslated
+	})
+	if posts := fake.postCount(); posts != 1 {
+		t.Fatalf("old A job was POSTed after ABA: %d %v", posts, fake.texts)
+	}
+	if pending := listener.lastStatus().Pending; pending != 0 {
+		t.Fatalf("pending accounting after ABA: %d", pending)
+	}
+	if server := listener.lastStatus().Server; server == "通信失敗" {
+		t.Fatalf("cancelled old A changed connection state: %+v", listener.lastStatus())
+	}
+}
+
 func TestOldRevisionFailureDoesNotPauseOrSendRemainingSegments(t *testing.T) {
 	cfg := testConfig(t)
 	oldMessage := fakeMessage("t", "a1", "Old first.\n\nOld second.")
@@ -595,6 +659,54 @@ func TestInitialAndRebuildReadFailureCombinations(t *testing.T) {
 				t.Fatalf("stopped monitor restarted: scans %d->%d reads %d->%d", scans, afterScans, reads, afterReads)
 			}
 		})
+	}
+}
+
+func TestHistoryRequestDuringPollIsRetained(t *testing.T) {
+	cfg := testConfig(t)
+	messages := []domain.Message{}
+	for index := 0; index < 60; index++ {
+		messages = append(messages, fakeMessage("t", fmt.Sprintf("a%02d", index), fmt.Sprintf("Message %d.", index)))
+	}
+	pollEntered := make(chan struct{}, 1)
+	releasePoll := make(chan struct{})
+	scripted := &scriptedReader{}
+	scripted.scanFn = func(int) (transcript.ScanResult, error) { return fakeScan("t", messages...), nil }
+	scripted.readFn = func(_ int, entries []domain.IndexEntry) ([]domain.Message, error) {
+		result := []domain.Message{}
+		for _, entry := range entries {
+			for _, message := range messages {
+				if message.ID == entry.ID {
+					result = append(result, message)
+				}
+			}
+		}
+		return result, nil
+	}
+	scripted.pollFn = func(call int) transcript.PollResult {
+		if call == 1 {
+			pollEntered <- struct{}{}
+			<-releasePoll
+		}
+		return transcript.PollResult{}
+	}
+	listener := &testListener{}
+	monitor := newMonitorWithReaders(t, cfg, &fakeTransport{}, listener, map[string]*scriptedReader{"t": scripted})
+	session := domain.SessionInfo{ThreadID: "t", Provider: domain.ProviderCodex}
+	monitor.Start(&session)
+	select {
+	case <-pollEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("poll did not start")
+	}
+	monitor.addHistorySync()
+	close(releasePoll)
+	waitUntil(t, 3*time.Second, func() bool {
+		return len(monitor.Views()) == 60
+	})
+	_, reads, _ := scripted.counts()
+	if reads != 2 {
+		t.Fatalf("history read calls = %d, want 2", reads)
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 func TestUnicodeWhitespaceBearerIsSecret(t *testing.T) {
 	spaces := []string{"\u00a0", "\u1680", "\u2000", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\u0085", "\t", "\v"}
 	for _, space := range spaces {
-		line := "Use token Bearer" + space + "sk-abcdefghijklmnopqrstuvwx and keep it secret.\n"
+		line := "Use token Bearer" + space + "ZYXWVUTSRQPONMLKJIHGFEDCBA and keep it secret.\n"
 		doc := ProtectDocument(line)
 		if len(doc.Units) != 1 || doc.Units[0].SkipReason != "secret" {
 			t.Fatalf("U+%04X not detected as secret: %+v", []rune(space)[0], doc.Units)

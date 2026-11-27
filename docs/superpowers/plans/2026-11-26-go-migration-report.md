@@ -51,7 +51,7 @@ G01-G26:
 | G14 | PASS | Scheduler tests: one worker, active≤32, deferred FIFO, priority/sequence, requeue, accounting |
 | G15 | PASS | Deterministic cache-lookup barrier (switch cancels before POST), cancel during HTTP, remaining-segment suppression |
 | G16 | PASS | Same ID across Codex/Claude, A→B→A, same-ID picker rows, stale in-flight B discarded |
-| G17 | PASS* | Old scan/read/poll/reconnect results ignored; switch/rebuild with initial/rebuild index-mismatch/read-error combinations covered deterministically |
+| G17 | PASS* | Old scan/read/poll/reconnect results ignored; switch/rebuild × index_mismatch/read_error four combinations covered deterministically |
 | G18 | PASS | Denied and thread-change stop retained; retry/history blocked; explicit switch recovers |
 | G19 | PASS | Rebuild retry/history blocked, note→scan→read ordering, readback mismatch stop, stop reason retained |
 | G20 | PASS | Pause/reconnect rules, retained unsubmitted work, retry only failed units, 4xx vs 5xx classification |
@@ -69,8 +69,8 @@ DIFFERENTIAL RESULTS / observed differences (approval pending):
 
 TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go mod verify` → all modules verified.
-- `go test ./...` → 181 passed.
-- `CGO_ENABLED=1 go test -race ./...` → 181 passed.
+- `go test ./...` → 188 passed.
+- `CGO_ENABLED=1 go test -race ./...` → 188 passed.
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
@@ -100,14 +100,15 @@ CACHE COMPATIBILITY / ROLLBACK:
 - Rollback to Python: fixed-commit worktree + `uv sync --locked` + `uv run transpane` (README). Existing DB remains usable by both.
 
 PR #5 REVIEW FOLLOW-UP (HEAD `7b7201d`):
-- P1-01 PASS: Python/RE2 `\s`, `\w`, `\b` differences are replaced by Unicode-aware classes and Python boundary checks; Unicode whitespace Bearer, Unicode path/function spans, oracle golden and HTTP non-send tests added.
-- P2-01 PASS: dispatch, post-cache permission and result handling validate TaskRef revision/unit; old revision jobs are cancelled/dropped; remaining segments suppressed; old failures cannot change pause/connection; accounting barrier tests added.
+- P1-01 PASS: Python/RE2 `\s`, `\w`, `\b` differences are replaced by Unicode-aware classes and Python boundary checks. Trailing-`\b` backtracking (for example a synthetic key ending in `-`) and alternation/longest-boundary cases are handled via anchored longest matching plus rune-wise end backtracking. Unicode whitespace Bearer (non-overlapping synthetic token), Unicode path/function spans, oracle golden and HTTP non-send tests added.
+- P2-01 PASS: dispatch, post-cache permission and result handling validate TaskRef revision/unit; cancelled job contexts are also checked so A→B→A cannot apply an old A result. Old revision jobs are cancelled/dropped; remaining segments suppressed; old failures cannot change pause/connection; accounting barrier tests added.
 - P2-02 PASS: session switch keeps the server pause; only a successful explicit reconnect GET resumes; stale reconnect results are discarded.
 - P2-03 PASS: SQLite DSN is percent-encoded and the same absolute path is checked and opened; `?`, `#`, `%` path tests added.
 - P2-04 PASS: the translation worker sends cache status snapshots with results; Monitor/TUI show runtime cache failures; no cross-goroutine cache field access.
 - P2-05 PASS: history denied/halted keeps existing views; initial/rebuild failures still reset; stop/retry/switch tests added.
 - P2-06 PASS: `Monitor.Close` waits for worker join plus client/cache close; no request-receipt shortcut; shutdown deadlock barriers.
-- G17 combinations, TUI scroll/picker/CJK checks: automated where possible; real terminal CJK confirmation remains part of G26.
+- P2-07 PASS: `h` requests received while a poll/read is in progress are queued and executed after the reader completes; Loading/Rebuilding/Stopped still suppress requests. Deterministic poll-blocked AddHistory barrier test added; public `AddHistory` remains non-blocking to avoid listener-backpressure deadlock.
+- G17 combinations: all four switch/rebuild × index_mismatch/read_error combinations are covered. TUI code was not changed in this round; its existing fold/picker tests remain, and real-terminal CJK confirmation remains part of G26.
 
 FRESH REVIEW / FIXES:
 - A fresh-context reviewer examined the branch and returned "With fixes".

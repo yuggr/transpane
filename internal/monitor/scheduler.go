@@ -34,6 +34,10 @@ func (j *Job) cancel() {
 	}
 }
 
+func (j *Job) cancelled() bool {
+	return j.Ctx != nil && j.Ctx.Err() != nil
+}
+
 type jobHeap []*Job
 
 func (h jobHeap) Len() int { return len(h) }

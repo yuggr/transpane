@@ -191,7 +191,7 @@
         "line": 11,
         "prefix": "",
         "suffix": "",
-        "source": "Use token Bearer sk-abcdefghijklmnopqrstuvwx and keep it secret.",
+        "source": "Use token Bearer ZYXWVUTSRQPONMLKJIHGFEDCBA and keep it secret.",
         "markers": [],
         "skip": "secret",
         "conservative": false,
@@ -238,9 +238,62 @@
             "trailing": ""
           }
         ]
+      },
+      {
+        "id": 7,
+        "line": 17,
+        "prefix": "",
+        "suffix": "",
+        "source": "Use sk-abcdefghijklmnopqrstuvwx- now.",
+        "markers": [],
+        "skip": "secret",
+        "conservative": false,
+        "segments": []
+      },
+      {
+        "id": 8,
+        "line": 19,
+        "prefix": "",
+        "suffix": "",
+        "source": "Open data.pyi now.",
+        "markers": [
+          "data.pyi"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Open @@CJ0@@ now.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "line": 21,
+        "prefix": "",
+        "suffix": "",
+        "source": "Edit src/foo- before merging.",
+        "markers": [
+          "src/foo"
+        ],
+        "skip": null,
+        "conservative": false,
+        "segments": [
+          {
+            "text": "Edit @@CJ0@@- before merging.",
+            "markers": [
+              "@@CJ0@@"
+            ],
+            "trailing": ""
+          }
+        ]
       }
     ],
-    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n\nUse token Bearer sk-abcdefghijklmnopqrstuvwx and keep it secret.\n\nEdit src/é/foo.py before merging.\n\nCall café_work() before shipping.\n"
+    "rendered": "## Results\n\nI updated `store.py` and ran the targeted tests.\n\n- All tests passed.\n- Review `tests/test_store.py` before merging.\n\n```bash\nuv run pytest tests/test_store.py\n```\n\nUse token Bearer ZYXWVUTSRQPONMLKJIHGFEDCBA and keep it secret.\n\nEdit src/é/foo.py before merging.\n\nCall café_work() before shipping.\n\nUse sk-abcdefghijklmnopqrstuvwx- now.\n\nOpen data.pyi now.\n\nEdit src/foo- before merging.\n"
   },
   "cache_keys": {
     "hello": "8f1899a2a426e162b566d6a00f2e975b4da89ce0a3af98a0a67edf17563db380",

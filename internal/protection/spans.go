@@ -30,9 +30,28 @@ const (
 // textPattern is a regex plus Python \b / lookbehind boundary checks.
 type textPattern struct {
 	regex         *regexp.Regexp
+	prefix        *regexp.Regexp
+	full          *regexp.Regexp
 	startBoundary bool
 	endBoundary   bool
 	context       func(rune) bool
+}
+
+func (p *textPattern) prepare() {
+	pattern := p.regex.String()
+	p.prefix = regexp.MustCompile("^(?:" + pattern + ")")
+	p.prefix.Longest()
+	p.full = regexp.MustCompile("^(?:" + pattern + ")$")
+	p.full.Longest()
+}
+
+func init() {
+	for index := range secretPatterns {
+		secretPatterns[index].prepare()
+	}
+	for index := range inlinePatterns {
+		inlinePatterns[index].prepare()
+	}
 }
 
 func isWordRune(r rune) bool {
@@ -54,6 +73,34 @@ func pythonBoundary(text string, position int) bool {
 	return beforeWord != afterWord
 }
 
+func previousRuneStart(text string, end int) int {
+	if end <= 0 {
+		return 0
+	}
+	_, size := utf8.DecodeLastRuneInString(text[:end])
+	return end - size
+}
+
+// matchFrom returns the longest match at start, then backtracks the end until
+// Python's trailing \b is satisfied. This reproduces the common Python regex
+// backtracking case (for example a synthetic key ending in '-').
+func (p textPattern) matchFrom(text string, start int) (int, bool) {
+	location := p.prefix.FindStringIndex(text[start:])
+	if location == nil || location[1] <= 0 {
+		return 0, false
+	}
+	end := start + location[1]
+	if !p.endBoundary {
+		return end, true
+	}
+	for candidate := end; candidate > start; candidate = previousRuneStart(text, candidate) {
+		if pythonBoundary(text, candidate) && p.full.MatchString(text[start:candidate]) {
+			return candidate, true
+		}
+	}
+	return 0, false
+}
+
 func (p textPattern) find(text string) []span {
 	found := []span{}
 	search := 0
@@ -63,12 +110,8 @@ func (p textPattern) find(text string) []span {
 			break
 		}
 		start := search + location[0]
-		end := search + location[1]
-		valid := end > start
-		if valid && p.startBoundary && !pythonBoundary(text, start) {
-			valid = false
-		}
-		if valid && p.endBoundary && !pythonBoundary(text, end) {
+		valid := true
+		if p.startBoundary && !pythonBoundary(text, start) {
 			valid = false
 		}
 		if valid && p.context != nil && start > 0 {
@@ -78,9 +121,11 @@ func (p textPattern) find(text string) []span {
 			}
 		}
 		if valid {
-			found = append(found, span{start: start, end: end})
-			search = end
-			continue
+			if end, ok := p.matchFrom(text, start); ok {
+				found = append(found, span{start: start, end: end})
+				search = end
+				continue
+			}
 		}
 		if start >= len(text) {
 			break

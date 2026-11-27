@@ -68,7 +68,7 @@ type switchRequest struct {
 
 type retryRequest struct{}
 
-type historyRequest struct{}
+type historyRequest struct{ done chan struct{} }
 
 type permissionRequest struct {
 	job   *Job
@@ -165,6 +165,7 @@ type Monitor struct {
 	genCtx              context.Context
 	genCancel           context.CancelFunc
 	pollInterval        time.Duration
+	historyPending      int
 }
 
 // New starts the monitor event loop and its single reader and translation
@@ -261,6 +262,25 @@ func (m *Monitor) AddHistory() {
 	}
 }
 
+// addHistorySync is used by deterministic tests to wait until the request has
+// been accepted (queued during a poll or started). The public TUI method stays
+// non-blocking so listener backpressure cannot deadlock Update.
+func (m *Monitor) addHistorySync() {
+	done := make(chan struct{})
+	select {
+	case m.events <- historyRequest{done: done}:
+	case <-m.done:
+		return
+	case <-m.ctx.Done():
+		return
+	}
+	select {
+	case <-done:
+	case <-m.done:
+	case <-m.ctx.Done():
+	}
+}
+
 // Views returns a deep copy of the published snapshot.
 func (m *Monitor) Views() []View {
 	m.snapshotMu.RLock()
@@ -347,7 +367,7 @@ func (m *Monitor) loop() {
 			case retryRequest:
 				m.handleRetry()
 			case historyRequest:
-				m.handleHistory()
+				m.handleHistory(request.done)
 			case permissionRequest:
 				m.handlePermission(request)
 			case closeRequest:
@@ -396,6 +416,7 @@ func (m *Monitor) handleSwitch(request switchRequest) {
 	m.stopped = false
 	m.note = ""
 	m.state = stateLoading
+	m.historyPending = 0
 	m.resetGenerationTransient()
 	m.lastUpdate = time.Now().Format("15:04:05")
 	if m.readerFactory != nil {
@@ -449,6 +470,7 @@ func (m *Monitor) handleReaderResponse(response readerResponse) {
 	case "poll":
 		m.handlePoll(response.poll)
 	}
+	m.maybeStartHistory()
 }
 
 func (m *Monitor) handleScan(response readerResponse) {
@@ -511,11 +533,13 @@ func (m *Monitor) handleRead(response readerResponse) {
 			}
 			if response.purpose == "history" {
 				if readErr.Reason == "missing" {
+					m.historyPending = 0
 					m.note = "ログ取得停止（ファイルが見つかりません）"
 					m.emitStatus()
 					return
 				}
 				if readErr.Reason == "read" {
+					m.historyPending = 0
 					m.note = "ログを読み取れません"
 					m.emitStatus()
 					return
@@ -612,7 +636,7 @@ func (m *Monitor) dispatch() {
 		if job == nil {
 			return
 		}
-		if !m.refCurrent(job.Ref) {
+		if job.cancelled() || !m.refCurrent(job.Ref) {
 			job.cancel()
 			m.scheduler.Complete(job, false)
 			continue
@@ -629,7 +653,7 @@ func (m *Monitor) dispatch() {
 }
 
 func (m *Monitor) handlePermission(request permissionRequest) {
-	allowed := !m.paused && !m.reconnecting && request.job == m.scheduler.Inflight() && m.refCurrent(request.job.Ref)
+	allowed := !m.paused && !m.reconnecting && !request.job.cancelled() && request.job == m.scheduler.Inflight() && m.refCurrent(request.job.Ref)
 	select {
 	case request.reply <- allowed:
 	case <-m.ctx.Done():
@@ -658,6 +682,14 @@ func (m *Monitor) handleTranslationResponse(response translationResponse) {
 	}
 	job := response.job
 	if job == nil || job != m.scheduler.Inflight() {
+		return
+	}
+	if job.cancelled() {
+		// A cancelled job from an older revision may still match the current
+		// revision string after A→B→A. Only release its accounting.
+		m.scheduler.Complete(job, false)
+		m.dispatch()
+		m.emitStatus()
 		return
 	}
 	if response.cacheStatus != nil {
@@ -863,11 +895,30 @@ func (m *Monitor) handleRetry() {
 	m.emitStatus()
 }
 
-func (m *Monitor) handleHistory() {
+func (m *Monitor) handleHistory(done chan struct{}) {
+	if done != nil {
+		defer close(done)
+	}
+	if m.stopped || m.state != stateWatching || m.reader == nil {
+		return
+	}
+	if m.visible >= len(m.entries) {
+		m.historyPending = 0
+		return
+	}
+	if m.readerBusy {
+		m.historyPending++
+		return
+	}
+	m.startHistory()
+}
+
+func (m *Monitor) startHistory() {
 	if m.stopped || m.state != stateWatching || m.reader == nil || m.readerBusy {
 		return
 	}
 	if m.visible >= len(m.entries) {
+		m.historyPending = 0
 		return
 	}
 	end := len(m.entries) - m.visible
@@ -888,6 +939,18 @@ func (m *Monitor) handleHistory() {
 		purpose:    "history",
 		count:      len(selected),
 	})
+}
+
+func (m *Monitor) maybeStartHistory() {
+	if m.historyPending <= 0 || m.stopped || m.state != stateWatching || m.readerBusy {
+		return
+	}
+	if m.visible >= len(m.entries) {
+		m.historyPending = 0
+		return
+	}
+	m.historyPending--
+	m.startHistory()
 }
 
 func (m *Monitor) pollTick() {
@@ -1056,6 +1119,7 @@ func (m *Monitor) rebuild(generation uint64, note string) {
 	m.genCancel()
 	m.genCtx, m.genCancel = context.WithCancel(m.ctx)
 	m.resetGenerationTransient()
+	m.historyPending = 0
 	m.clearPending()
 	m.stopped = true
 	m.state = stateRebuilding
@@ -1078,6 +1142,7 @@ func (m *Monitor) stop(note string, reset bool) {
 	m.genCancel()
 	m.genCtx, m.genCancel = context.WithCancel(m.ctx)
 	m.resetGenerationTransient()
+	m.historyPending = 0
 	m.clearPending()
 	m.stopped = true
 	m.state = stateStopped

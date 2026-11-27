@@ -761,7 +761,7 @@ func TestMonitorPartialUnitFailure(t *testing.T) {
 
 func TestMonitorUnicodeSecretNotSent(t *testing.T) {
 	cfg := testConfig(t)
-	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Use token Bearer\u00a0sk-abcdefghijklmnopqrstuvwx now.")})
+	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Use token Bearer\u00a0ZYXWVUTSRQPONMLKJIHGFEDCBA now.")})
 	listener := &testListener{}
 	fake := &fakeTransport{}
 	monitor := newMonitor(t, cfg, fake, listener)
@@ -771,6 +771,21 @@ func TestMonitorUnicodeSecretNotSent(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if fake.postCount() != 0 {
 		t.Fatalf("Unicode-space secret sent: %d", fake.postCount())
+	}
+}
+
+func TestMonitorTrailingHyphenSecretNotSent(t *testing.T) {
+	cfg := testConfig(t)
+	writeCodex(t, cfg, "t", []map[string]any{codexMeta("t", "paginated"), codexAgent("a1", "Use sk-abcdefghijklmnopqrstuvwx- now.")})
+	listener := &testListener{}
+	fake := &fakeTransport{}
+	monitor := newMonitor(t, cfg, fake, listener)
+	session := codexSession(t, cfg, "t")
+	monitor.Start(&session)
+	waitUntil(t, 3*time.Second, func() bool { return len(monitor.Views()) == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if fake.postCount() != 0 {
+		t.Fatalf("trailing-hyphen secret sent: %d", fake.postCount())
 	}
 }
 
