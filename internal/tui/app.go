@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yuggr/transpane/internal/config"
 	"github.com/yuggr/transpane/internal/domain"
@@ -73,6 +74,7 @@ type App struct {
 func New(ctx context.Context, cfg config.Config, initial *domain.SessionInfo, cwd string, source *domain.Provider) *App {
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(22))
 	vp.MouseWheelEnabled = true
+	vp.SoftWrap = false
 	app := &App{
 		ctx:        ctx,
 		config:     cfg,
@@ -150,6 +152,10 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.waitForEvent()
 	case statusMsg:
 		a.status = msg.status
+		a.applyLayout()
+		if a.autoScroll {
+			a.viewport.GotoBottom()
+		}
 		return a, a.waitForEvent()
 	case sessionsMsg:
 		a.sessions = msg.sessions
@@ -279,11 +285,20 @@ func (p *pickerState) restore(sessions []domain.SessionInfo) {
 	}
 }
 
-func (a *App) adjustPicker() {
-	height := a.height - 4
+func (a *App) pickerRows() int {
+	width := a.contentWidth()
+	title := len(wrapDisplayLine("セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）", width))
+	status := len(wrapDisplayLine(a.statusText(), width))
+	footer := len(wrapDisplayLine("↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索", width))
+	height := a.height - title - status - footer
 	if height < 1 {
 		height = 1
 	}
+	return height
+}
+
+func (a *App) adjustPicker() {
+	height := a.pickerRows()
 	if a.picker.selected < a.picker.top {
 		a.picker.top = a.picker.selected
 	}
@@ -376,13 +391,93 @@ func (a *App) reindex() {
 }
 
 func (a *App) relayout() {
-	height := a.height - 2
+	a.applyLayout()
+	a.rebuild(true)
+}
+
+func (a *App) contentWidth() int {
+	width := a.width
+	if width <= 0 {
+		width = a.viewport.Width()
+	}
+	if width <= 0 {
+		width = 80
+	}
+	return width
+}
+
+const displayTabWidth = 4
+
+func expandTabsForDisplay(line string) string {
+	if !strings.ContainsRune(line, '\t') {
+		return line
+	}
+	var builder strings.Builder
+	column := 0
+	for _, r := range line {
+		if r == '\t' {
+			spaces := displayTabWidth - column%displayTabWidth
+			builder.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+			continue
+		}
+		builder.WriteRune(r)
+		column += ansi.StringWidth(string(r))
+	}
+	return builder.String()
+}
+
+func wrapDisplayLine(line string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	line = expandTabsForDisplay(line)
+	wrapped := ansi.Wrap(line, width, " ")
+	if wrapped == "" {
+		return []string{""}
+	}
+	return strings.Split(wrapped, "\n")
+}
+
+func wrapDisplayText(text string, width int) []string {
+	physical := strings.Split(text, "\n")
+	lines := []string{}
+	for _, line := range physical {
+		lines = append(lines, wrapDisplayLine(line, width)...)
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
+func (a *App) layoutLines() (status, footer []string) {
+	width := a.contentWidth()
+	status = wrapDisplayLine(a.statusText(), width)
+	footer = wrapDisplayLine(a.footerView(), width)
+	maxAux := a.height - 1
+	if maxAux < 1 {
+		maxAux = 1
+	}
+	if len(status)+len(footer) > maxAux {
+		if len(status) >= maxAux {
+			status = status[:maxAux]
+			footer = nil
+		} else {
+			footer = footer[:maxAux-len(status)]
+		}
+	}
+	return status, footer
+}
+
+func (a *App) applyLayout() {
+	status, footer := a.layoutLines()
+	height := a.height - len(status) - len(footer)
 	if height < 1 {
 		height = 1
 	}
-	a.viewport.SetWidth(a.width)
+	a.viewport.SetWidth(a.contentWidth())
 	a.viewport.SetHeight(height)
-	a.rebuild(true)
 }
 
 func (a *App) rebuild(preserve bool) {
@@ -425,6 +520,7 @@ func (a *App) restoreAnchor(key domain.MessageKey, inner int) {
 }
 
 func (a *App) buildContent() string {
+	width := a.contentWidth()
 	lines := []string{}
 	a.ranges = nil
 	for index, view := range a.views {
@@ -432,17 +528,13 @@ func (a *App) buildContent() string {
 			lines = append(lines, "")
 		}
 		start := len(lines)
-		lines = append(lines, a.header(view))
+		lines = append(lines, wrapDisplayLine(a.header(view), width)...)
 		body := view.DisplayText()
 		if a.originalMode {
 			body = view.Message.Original
 		}
 		body = SanitizeForDisplay(body)
-		if body == "" {
-			lines = append(lines, "")
-		} else {
-			lines = append(lines, strings.Split(body, "\n")...)
-		}
+		lines = append(lines, wrapDisplayText(body, width)...)
 		a.ranges = append(a.ranges, messageRange{
 			start: start,
 			end:   len(lines) - 1,
@@ -499,7 +591,9 @@ func (a *App) View() tea.View {
 	if a.picker != nil {
 		content = a.pickerView()
 	} else {
-		content = a.statusText() + "\n" + a.viewport.View() + "\n" + a.footer()
+		a.applyLayout()
+		status, footer := a.layoutLines()
+		content = strings.Join(status, "\n") + "\n" + a.viewport.View() + "\n" + strings.Join(footer, "\n")
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
@@ -511,19 +605,15 @@ func (a *App) footerView() string {
 	return "s: セッション  o: 原文/翻訳  r: 再試行  h: 履歴追加  End: 最新  q: 終了"
 }
 
-func (a *App) footer() string { return a.footerView() }
-
 func (a *App) pickerView() string {
-	lines := []string{
-		"セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）",
-		a.statusText(),
-	}
-	height := a.height - 4
-	if height < 1 {
-		height = 1
-	}
+	width := a.contentWidth()
+	title := wrapDisplayLine("セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）", width)
+	status := wrapDisplayLine(a.statusText(), width)
+	footer := wrapDisplayLine("↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索", width)
+	lines := append(append(append([]string{}, title...), status...), "")
+	height := a.pickerRows()
 	if len(a.sessions) == 0 {
-		lines = append(lines, "セッションが見つかりません。s で再検索できます。")
+		lines = append(lines, wrapDisplayLine("セッションが見つかりません。s で再検索できます。", width)...)
 	}
 	end := a.picker.top + height
 	if end > len(a.sessions) {
@@ -540,14 +630,17 @@ func (a *App) pickerView() string {
 		if session.OriginLabel() != "" {
 			row += "  " + session.OriginLabel()
 		}
-		row = SanitizeForDisplay(row)
+		row = ansi.Truncate(SanitizeForDisplay(row), width, "…")
 		if index == a.picker.selected {
 			row = "> " + row
 		} else {
 			row = "  " + row
 		}
-		lines = append(lines, row)
+		lines = append(lines, ansi.Truncate(row, width, "…"))
 	}
-	lines = append(lines, "↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索")
+	lines = append(lines, footer...)
+	if a.height > 0 && len(lines) > a.height {
+		lines = lines[:a.height]
+	}
 	return strings.Join(lines, "\n")
 }
