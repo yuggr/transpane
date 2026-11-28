@@ -456,8 +456,8 @@ func (a *App) layoutLines() (status, footer []string) {
 	status = wrapDisplayLine(a.statusText(), width)
 	footer = wrapDisplayLine(a.footerView(), width)
 	maxAux := a.height - 1
-	if maxAux < 1 {
-		maxAux = 1
+	if maxAux < 0 {
+		maxAux = 0
 	}
 	if len(status)+len(footer) > maxAux {
 		if len(status) >= maxAux {
@@ -593,7 +593,15 @@ func (a *App) View() tea.View {
 	} else {
 		a.applyLayout()
 		status, footer := a.layoutLines()
-		content = strings.Join(status, "\n") + "\n" + a.viewport.View() + "\n" + strings.Join(footer, "\n")
+		parts := []string{}
+		if len(status) > 0 {
+			parts = append(parts, strings.Join(status, "\n"))
+		}
+		parts = append(parts, a.viewport.View())
+		if len(footer) > 0 {
+			parts = append(parts, strings.Join(footer, "\n"))
+		}
+		content = strings.Join(parts, "\n")
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true

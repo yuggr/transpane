@@ -251,6 +251,19 @@ func TestWrapDoesNotMutateData(t *testing.T) {
 	}
 }
 
+func TestVerySmallHeightsDoNotOverflow(t *testing.T) {
+	body := "A long English sentence that needs wrapping even in a very small terminal."
+	view := makeView("a1", body, domain.MessageKindAssistant, domain.TranslationStateOriginal, nil)
+	for _, height := range []int{1, 2, 3, 4, 5} {
+		app := appAtSize(t, 40, height, view)
+		lines := strings.Split(app.View().Content, "\n")
+		if len(lines) > height {
+			t.Fatalf("height %d: %d lines", height, len(lines))
+		}
+		assertLinesFit(t, lines, 40)
+	}
+}
+
 func TestNarrowViewerAndPickerStayInsideScreen(t *testing.T) {
 	body := "A long English sentence that needs multiple wrapped display lines on a narrow terminal."
 	view := makeView("a1", body, domain.MessageKindAssistant, domain.TranslationStateOriginal, nil)
