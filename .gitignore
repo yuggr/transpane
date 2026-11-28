@@ -10,3 +10,5 @@ htmlcov/
 *.db-journal
 .transcripts/
 .superpowers/
+
+dist/

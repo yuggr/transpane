@@ -1,0 +1,64 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise install
+      - run: go mod verify
+      - run: go test ./...
+      - run: go vet ./...
+      - run: golangci-lint run ./...
+      - run: golangci-lint fmt --diff
+      - run: govulncheck ./...
+
+  race:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise install
+      - run: CGO_ENABLED=1 go test -race ./...
+
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise install
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath \
+            -ldflags "-s -w -X github.com/yuggr/transpane/internal/cli.Version=0.1.0 -X github.com/yuggr/transpane/internal/cli.Commit=${GITHUB_SHA}" \
+            -o dist/transpane ./cmd/transpane
+          file dist/transpane
+          if ldd dist/transpane 2>&1 | grep -q 'not a dynamic executable\|動的実行ファイルではありません'; then
+            echo "static binary confirmed"
+          else
+            ldd dist/transpane || true
+            echo "warning: binary reports dynamic dependencies"
+          fi
+          ./dist/transpane --version
+          cp LICENSE dist/LICENSE
+          cp README.md dist/README.md
+          tar -C dist -czf dist/transpane-linux-amd64.tar.gz transpane LICENSE README.md
+          (cd dist && sha256sum transpane-linux-amd64.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transpane-linux-amd64
+          path: |
+            dist/transpane-linux-amd64.tar.gz
+            dist/SHA256SUMS

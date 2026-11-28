@@ -1,0 +1,30 @@
+[tools]
+go = "1.27.4"
+"golangci-lint" = "2.15.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "v1.10.0"
+
+[tasks.check]
+description = "Run vet, tests and lint"
+run = "go vet ./... && go test ./... && golangci-lint run ./..."
+
+[tasks.race]
+description = "Run the race detector"
+run = "CGO_ENABLED=1 go test -race ./..."
+
+[tasks.fuzz]
+description = "Run each fuzz target briefly"
+run = [
+  "go test ./internal/protection -run '^$' -fuzz '^FuzzProtect$' -fuzztime 30s",
+  "go test ./internal/protection -run '^$' -fuzz '^FuzzValidate$' -fuzztime 30s",
+  "go test ./internal/transcript -run '^$' -fuzz '^FuzzDecodeObject$' -fuzztime 30s",
+  "go test ./internal/transcript -run '^$' -fuzz '^FuzzLineSplitter$' -fuzztime 30s",
+  "go test ./internal/config -run '^$' -fuzz '^FuzzValidateBaseURL$' -fuzztime 30s",
+]
+
+[tasks.build]
+description = "Build the CGO-free release binary"
+run = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/transpane ./cmd/transpane"
+
+[tasks.vuln]
+description = "Run govulncheck"
+run = "govulncheck ./..."

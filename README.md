@@ -11,9 +11,8 @@
 
 ## 動作環境
 
-- WSL2 上の Linux（Windows ネイティブは対象外）
-- Python 3.12 以上
-- [uv](https://docs.astral.sh/uv/)
+- WSL2 上の Linux amd64（Windows ネイティブ、Linux arm64 は未保証）
+- 単一の `transpane` 実行ファイル。Go / Python / uv のインストールは不要です
 - 既存の Codex CLI（動作確認: `codex-cli 0.169.0`）または Claude Code CLI
   （動作確認: `2.1.285`）
 - OpenAI 互換 API を提供するローカルの PLaMo 3 Translate 2B（例: LM Studio）
@@ -21,12 +20,40 @@
 ## インストール
 
 ```bash
-cd /path/to/transpane
-uv sync --locked
-uv run transpane --help
+install -m 0755 ./transpane "$HOME/.local/bin/transpane"
+transpane --version
+transpane doctor
+transpane --source codex
 ```
 
-`uv run transpane` は `uv.lock` に固定された依存で動作します。
+配布物は `transpane-linux-amd64.tar.gz` と `SHA256SUMS` です。既存の Python 版
+実行ファイルがある場合は上書きせず、`command -v transpane` で選択される実体を
+確認してください。ソースからは Go 1.27.4 でビルドできます。
+
+```bash
+mise install
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/transpane ./cmd/transpane
+```
+
+### Python 版からの移行とロールバック
+
+Go 版は既存の設定ファイル、Codex / Claude Code の transcript、SQLite キャッシュを
+そのまま読みます。キャッシュ key・schema・`created_at` は Python 版と互換です。
+移行時に DB を削除・再生成する必要はありません。
+
+問題があれば、Python 版を含む固定コミットの worktree で従来どおり起動できます。
+Go 版が既存 DB を読み書きした後でも Python 版へ戻れます（双方向の読み書きを
+合成 DB で確認しています）。
+
+```bash
+git worktree add /tmp/transpane-python f199bb6cce011c80d28f7cdfe91929d62d30c08f
+cd /tmp/transpane-python
+uv sync --locked
+transpane doctor
+```
+
+旧 DB の削除・置換は移行手順に含めません。Go 版が使えない場合は
+`command -v transpane` を確認し、旧実行ファイルを明示的に選んでください。
 
 ## 設定
 
@@ -69,30 +96,30 @@ base_url = "http://192.168.1.50:1234/v1"
 
 その IP が自分の Windows ホストであることを利用者が確認してください。任意の LAN
 サービスを信頼する設定ではありません。HTTP プロキシ環境変数は無視され
-（`trust_env=False`）、redirect も追跡しません。
+（Go の HTTP Transport で `Proxy: nil`）、redirect も追跡しません。
 
 ## 使い方
 
 ```bash
 # 診断（本文は送信しない）
-uv run transpane doctor
-uv run transpane --source claude doctor
-uv run transpane --source codex doctor
+transpane doctor
+transpane --source claude doctor
+transpane --source codex doctor
 
 # セッション一覧（本文は出さない。既定は Codex と Claude Code の両方）
-uv run transpane sessions
-uv run transpane --source claude sessions
+transpane sessions
+transpane --source claude sessions
 
 # ログ形式と件数の確認（本文は出さない）
-uv run transpane inspect --session <thread-id>
-uv run transpane --source claude inspect --session <session-id>
+transpane inspect --session <thread-id>
+transpane --source claude inspect --session <session-id>
 
 # TUI（候補から選択）
-uv run transpane
-uv run transpane --cwd /path/to/project          # cwd 完全一致で候補を絞る
-uv run transpane --source claude                 # Claude Code のみ
-uv run transpane --session claude:<session-id>   # provider 付きの明示選択
-uv run transpane --session codex:<thread-id>
+transpane
+transpane --cwd /path/to/project          # cwd 完全一致で候補を絞る
+transpane --source claude                 # Claude Code のみ
+transpane --session claude:<session-id>   # provider 付きの明示選択
+transpane --session codex:<thread-id>
 ```
 
 `--source` は `all`（既定）、`codex`、`claude` の 3 値で、subcommand より前に指定します。
@@ -113,15 +140,15 @@ Codex だけを従来どおり利用できます。
 
 ```bash
 # Claude Code のメインセッションだけを一覧
-uv run transpane --source claude sessions
+transpane --source claude sessions
 
 # 同じ cwd で Claude Code と transpane を並べる
 cd /path/to/project
 claude
 # 別ペイン（cwd で絞る場合）
-uv run transpane --source claude --cwd /path/to/project
+transpane --source claude --cwd /path/to/project
 # または ID を明示する場合
-uv run transpane --source claude --session claude:<session-id>
+transpane --source claude --session claude:<session-id>
 ```
 
 Claude Code の transcript は
@@ -137,8 +164,8 @@ codex          # または claude
 
 # 右ペイン
 cd /path/to/transpane
-uv run transpane --cwd /path/to/project
-uv run transpane --source claude --cwd /path/to/project
+transpane --cwd /path/to/project
+transpane --source claude --cwd /path/to/project
 ```
 
 各 CLI の起動・入力・承認・終了操作は変わりません。ビューアを終了・再起動しても
@@ -163,12 +190,21 @@ CLI の実行は継続します。ビューアと CLI の間にプロセス親�
 ## 表示と翻訳の状態
 
 - 原文を先に表示し、翻訳完了後に同じメッセージを更新します。
+- 本文・ヘッダー・status・footer は端末の表示幅で折り返します。英文は可能な限り
+  単語境界、日本語・CJK・絵文字は表示セル幅と書記素クラスタを考慮し、URL や長い
+  識別子は必要に応じて強制折り返しします。折り返しは表示専用で、原文・翻訳・
+  キャッシュ・HTTP 本文は変更しません。
 - 表示状態: 待機 / 翻訳中 / 翻訳成功（表示なし）/ 部分翻訳 / 翻訳失敗。
 - `翻訳失敗` は原文を維持し、エラー分類（接続失敗・タイムアウト・HTTP エラー・
   応答形式不正・空応答・応答未完了）を表示します。
 - 自動再試行はしません。`r` で失敗部分だけを再送します。
 - サーバーが利用不能（接続失敗・timeout・5xx）の場合は未送信分を保持して停止し、
-  `r` で再接続後に再開します。
+  `r` で再接続後に再開します。セッションを切り替えても pause は解除されません。
+  明示的な `r` による GET 成功後のみ再開します。
+- `h` は poll / 読取中でも要求を保持し、現在の読取完了後に履歴を追加します。
+  停止中・再構築中の要求は受け付けません。
+- 履歴取得中の denied / halted では表示を保持して監視を停止し、`r` / `h` では
+  自動復帰しません。`s` で明示的にセッションを選び直した場合だけ復旧します。
 - 日本語入力、日本語を含む混在文、コード、秘密情報と判定した行は送信しません。
 
 ### Markdown の保護範囲
@@ -188,7 +224,9 @@ CLI の実行は継続します。ビューアと CLI の間にプロセス親�
 
 インラインコード、Markdown リンク（ラベル含む）、URL、パス、ファイル名、
 CLI オプション、環境変数、snake_case / camelCase の識別子、関数呼び出し、
-バージョン表記は ASCII マーカーに置き換えてモデルへ送りません。復元時に
+バージョン表記は ASCII マーカーに置き換えてモデルへ送りません。
+`src/.github/workflows/check.yml` のようにドットで始まる構成要素を含むパスも
+パス全体を保護します。復元時に
 マーカーの欠落・重複・順序変更・未知マーカーを検査し、1 つでも不一致なら
 その段落は原文のまま表示します。
 
@@ -226,7 +264,10 @@ CLI オプション、環境変数、snake_case / camelCase の識別子、関�
   source_lang, target_lang, form, protected_source_segment]` の SHA-256 です。
   モデル・文体・ポリシー・サーバーが変われば別キーになります。
 - 破損・ロック・書込不可の場合は診断を出し、既存 DB を削除せずにメモリ処理へ切り替えます。
+  実行中に発生したキャッシュ障害も worker から状態 snapshot として Monitor/TUI へ反映します。
 - モデルを同じ ID のまま差し替えた場合は自動検知しません。必要ならキャッシュを退避してください。
+- Python 版と Go 版は同じ key を生成します。Go 版で保存した翻訳を Python 版が、
+  Python 版で保存した翻訳を Go 版が再利用できます。`created_at` は UTC RFC3339 です。
 
 ```bash
 # 退避（削除しない）
@@ -339,7 +380,8 @@ mv ~/.cache/transpane/translations.sqlite3 \
   tool、reasoning、system/developer、子エージェント通信、内部 wrapper、tool 結果は
   送りません。
 - PEM 秘密鍵、Bearer token、代表的な API キー形式、認証情報付き URL を含む行は
-  送信しません。検出の完全性は保証できません。実ログには資格情報が含まれ得るため、
+  送信しません。Unicode 空白を含む Bearer 形式、Unicode 単語境界を含むパス・識別子も
+  Python 版と同じ保護対象として扱います。検出の完全性は保証できません。実ログには資格情報が含まれ得るため、
   transcript を診断・issue・fixture・PR へ添付しないでください。翻訳本文の HTTP 確認が
   必要な場合も合成した無害な英文を使ってください。ローカルサーバー側の要求ログ保持は
   利用者が確認してください。
@@ -359,7 +401,8 @@ mv ~/.cache/transpane/translations.sqlite3 \
 - プロジェクトファイルの自動翻訳
 - 翻訳サーバーの起動・管理、課金 API、Web UI
 - 複数セッションの同時監視・同時翻訳（切り替えは可能）
-- Windows ネイティブでの動作、WSL から Windows 側 Claude Code 履歴の暗黙探索
+- Windows ネイティブでの動作、Linux arm64、WSL から Windows 側 Claude Code 履歴の暗黙探索
+- 入力翻訳、PTY ラッパー、Codex/Claude 本体の起動・承認・kill
 
 ## 動作確認済み環境
 
@@ -383,47 +426,65 @@ mv ~/.cache/transpane/translations.sqlite3 \
   このリポジトリの自動テストでは未確認です（利用者側の手動試験が必要）。
 - transcript 形式は公式に内部形式であり、上記以外の版・形の互換性は保証しません。
 - 翻訳: LM Studio 上の `plamo-3-translate-2b`（`/v1/models` で ID 確認）。
-- 遅延（合成ログ・同一マシン・ウォーム状態、5 回）:
+- 遅延（Python 版の参考値。合成ログ・同一マシン・ウォーム状態、5 回）:
   - 原文表示: 中央値 100ms、最大 281ms
   - 翻訳完了: 中央値 507ms、最大 685ms
   - 参考: モデル初回ロード時は 1 リクエスト約 11.6 秒
+- Go 版の実測性能は未測定です。翻訳の支配要因は外部モデル生成時間であり、
+  本移行は速度改善を目的としていません。
 
 ## 開発
 
+Go 版の開発・検証は `mise` で固定した toolchain を使います。
+
 ```bash
-uv sync --locked
-uv run pytest -q
-uv run ruff check src tests
-uv run ruff format --check src tests
+mise install
+mise run check        # go vet + go test + golangci-lint
+mise run race         # CGO_ENABLED=1 go test -race ./...
+mise run fuzz         # 30 秒ずつの fuzz
+mise run vuln         # govulncheck
+mise run build        # CGO_ENABLED=0 Linux amd64
 ```
 
+リリースバイナリは CGO 不要です。`go mod verify`、`golangci-lint fmt --diff`、
+`git diff --check` も CI で実行します。Python 版は移植完了まで固定基点の
+オラクルとして残し、通常の Go CI は Python / uv を要求しません。
+
 ```text
-src/transpane/
-├── cli.py           # 引数・診断CLI
-├── claude.py        # Claude Code の発見・メタデータ解釈
-├── config.py        # 設定解決・URL制約・内部定数
-├── models.py        # dataclass / enum
-├── session.py       # Codex 発見・共通 SessionReader・セッション選択
-├── events.py        # Codex / Claude Code の JSONL 許可リスト変換
-├── markdown.py      # 構造保護・分割・復元検証
-├── cache.py         # SQLite キャッシュ
-├── translation.py   # HTTP client / scheduler
-└── ui.py            # メッセージストア / Monitor / Textual UI
+cmd/transpane/           # os.Exit, signal context
+internal/
+  cli/                   # 引数・doctor/sessions/inspect・TUI起動
+  config/                # 厳格TOML・XDG・URL allowlist
+  domain/                # 値型・ラベル・revision
+  transcript/            # 発見・抽出・byte offset reader/index
+  protection/            # Markdown AST・span・marker・分割/復元
+  cache/                 # SQLite・Python互換key
+  translate/             # HTTP client
+  monitor/               # 状態所有・poll・scheduler
+  tui/                   # Bubble Tea 表示・キー・picker
+testdata/compat/         # 合成 fixture と Python oracle golden
+scripts/compat/          # 開発専用 Python oracle
 ```
 
 ### 実装上の判断
 
 - 翻訳単位は「翻訳対象ブロック内の 1 物理行」です。改行・接頭辞・マーカーを
   構造的に保持するため、複数行ブロックや入れ子構造は原文のまま残します。
-- 仕様のモジュール一覧にコントローラが存在しないため、セッション監視と
-  スケジューラの結線は `ui.py` 内の `Monitor` が担います。
+- 監視・表示・キューの可変状態は `internal/monitor` の単一イベントループが所有します。
+  TUI はキーとサイズだけを渡し、不変 snapshot を受け取ります。
 - TUI のセッション選択は行単位です（同一 ID のファイルが複数ある場合でも
   人間がファイルを選べます）。`--session` の重複 ID は仕様どおりエラーです。
 - provider 固有処理は発見・メタデータ解釈・イベント抽出だけです。HTTP、Markdown 保護、
   キャッシュ、TUI は Codex / Claude Code で共通です。翻訳キャッシュのキーに provider を
   含めないため、同一の保護済み英文は両者で再利用されます。
-- 翻訳ジョブの取消はスレッド ID ではなく世代番号で行います。同じ raw ID を持つ
+- 翻訳ジョブの取消はセッション ID ではなく世代番号で行います。同じ raw ID を持つ
   provider / ファイルへ切り替えても、旧世代の未送信本文を送ったり結果を混ぜたりしません。
+- Go の `net/http` は proxy を使わず redirect を追跡しません。connect 3 秒、
+  read idle 60 秒、要求全体 90 秒を適用します。既にサーバーへ渡った要求の停止は
+  保証しません。
+- Markdown 保護は goldmark AST と手続き的な span 判定を使います。Go RE2 に
+  ない lookbehind / backreference は前文字判定と同長 delimiter 走査で置き換え、
+  不確かな span は原文保持に倒します。
 
 ## トラブルシューティング
 
