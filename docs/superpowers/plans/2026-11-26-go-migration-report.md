@@ -2,7 +2,7 @@
 
 STATUS: PARTIAL
 
-BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `6b2eb6e` (PR #5 final fixes)
+BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `77c3b18` (TUI wrapping fix)
 
 PHASES:
 - Phase 0: complete — baseline pytest 219 passed, toolchain pinned (Go 1.27.4, golangci-lint 2.15.0, govulncheck v1.10.0), dependency smoke tests, synthetic oracle.
@@ -56,7 +56,7 @@ G01-G26:
 | G19 | PASS | Rebuild retry/history blocked, note→scan→read ordering, readback mismatch stop, stop reason retained |
 | G20 | PASS | Pause/reconnect rules, retained unsubmitted work, retry only failed units, 4xx vs 5xx classification |
 | G21 | PASS | CLI tests: doctor all diagnostics, root read once, no body/HTTP in sessions/inspect |
-| G22 | PASS* | TUI unit tests + PTY run: original first, translation, keys, picker snapshot, scroll anchor, headers/status |
+| G22 | PASS* | TUI unit tests + PTY run: original first, translation, keys, picker snapshot, wrapped headers/status/footer, wrapped-line scroll anchor. Real-terminal resize/CJK visual confirmation NOT RUN |
 | G23 | PASS | Monitor test asserts transcript bytes, mtime and mode unchanged; no agent process launch by design |
 | G24 | PASS* | Race suite, 30 s fuzz each, Close/quit/terminal restore in PTY; no goroutine-leak detector |
 | G25 | PASS | Static 13.8 MB binary, clean `env -i` `--version`/`doctor` without Go/Python/uv, SHA-256 |
@@ -69,8 +69,8 @@ DIFFERENTIAL RESULTS / observed differences (approval pending):
 
 TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go mod verify` → all modules verified.
-- `go test ./...` → 194 passed.
-- `CGO_ENABLED=1 go test -race ./...` → 194 passed.
+- `go test ./...` → 224 passed.
+- `CGO_ENABLED=1 go test -race ./...` → 224 passed.
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
@@ -79,8 +79,8 @@ TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w"` → static ELF.
 
 BINARY SIZE / CHECKSUM / RUNTIME DEPENDENCIES:
-- Size: 13,881,504 bytes (stripped, final build at `6b2eb6e`).
-- SHA-256: `1261c86a1065f9a61b7af3c79444eaa7222d48b8f699b9b3f59299d2a4e34cfc`.
+- Size: 13,889,696 bytes (stripped, final build at `77c3b18`).
+- SHA-256: `77a7f7aa6b2faf54cecb07b75feade6f39e70762e6ee90e28e2d7bbb80df1907`.
 - `file` → ELF 64-bit LSB executable, x86-64, statically linked; `ldd` → not a dynamic executable.
 - Runtime: Linux amd64 only; no Go/Python/uv/system library requirement.
 
@@ -121,6 +121,12 @@ FRESH REVIEW / FIXES:
 - Important I2/I3/I5 (picker key stability, TUI shutdown ordering, Python-created cache DB fixture) are fixed/tested.
 - Important I4 (missing invalid-marker/no-cache, 4xx vs 5xx state, partial-unit tests) is closed.
 - Minor items are documented as observed differences requiring approval (IPv6 canonicalization, empty query, `~user`, backtick artifact, subcommand help text, timestamp variants); `created_at` now uses six digits when microseconds are non-zero.
+
+TUI WRAPPING FIX (W01–W14):
+- Root cause: viewport SoftWrap was disabled and `buildContent` passed physical lines unchanged, so lines wider than the terminal were clipped. Status/footer were also unwrapped.
+- Fix: display-only wrapping before `viewport.SetContent` using pinned `github.com/charmbracelet/x/ansi` `Wrap` (grapheme/CJK/ANSI aware), one physical line at a time with tabs expanded to display spaces. Status and footer wrap too; viewport height is recomputed from wrapped aux lines. `SoftWrap` stays off to avoid double wrapping. Anchor ranges are based on wrapped display lines.
+- W01 PASS English word-boundary wrap test; W02 PASS Japanese cell-width test; W03 PASS mixed text no-loss test; W04 PASS long URL/identifier wrap test; W05 PASS explicit newline/blank/indent test; W06 PASS emoji/combining/fullwidth test; W07 PASS resize rewrap test; W08 PASS translation-update anchor test; W09 PASS history-prepend anchor test; W10 PASS original/translation toggle anchor test; W11 PASS End/auto-scroll test; W12 PASS status/footer and narrow picker fit test; W13 PASS data-immutability test; W14 PASS existing TUI/regression suite.
+- PTY at 40×20: original/long English, translated text, Japanese end marker displayed and `q` exited 0. Real-terminal resize and visual CJK-cell confirmation are NOT RUN; G26 remains PARTIAL.
 
 UNRESOLVED RISKS / NOT VERIFIED:
 - Real Codex/Claude transcript variants and real PLaMo model timing (G26) are unverified; PARTIAL by definition.
