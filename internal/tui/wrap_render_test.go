@@ -287,6 +287,56 @@ func TestNarrowViewerAndPickerStayInsideScreen(t *testing.T) {
 		t.Fatalf("picker height exceeded: %d lines", len(lines))
 	}
 	assertLinesFit(t, lines, 40)
+	if !strings.Contains(content, "> Codex") {
+		t.Fatalf("selected picker row not visible: %q", content)
+	}
+	if !strings.Contains(content, "再検索") {
+		t.Fatalf("picker footer not visible: %q", content)
+	}
+}
+
+func TestPickerKeepsSelectedRowAndFooterWithFullList(t *testing.T) {
+	app := newTestApp()
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	sessions := []domain.SessionInfo{}
+	for index := 0; index < 30; index++ {
+		sessions = append(sessions, domain.SessionInfo{
+			ThreadID: "session-" + string(rune('A'+index%26)),
+			Provider: domain.ProviderCodex,
+			Path:     "/tmp/" + string(rune('A'+index%26)),
+		})
+	}
+	app.Update(sessionsMsg{sessions: sessions})
+	content := app.View().Content
+	lines := strings.Split(content, "\n")
+	if len(lines) > 24 {
+		t.Fatalf("picker height exceeded: %d", len(lines))
+	}
+	assertLinesFit(t, lines, 80)
+	if !strings.Contains(content, "> Codex") || !strings.Contains(content, "再検索") {
+		t.Fatalf("selected row/footer missing: %q", content)
+	}
+}
+
+func TestPickerKeepsSelectedRowWithLongStatus(t *testing.T) {
+	app := newTestApp()
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	app.Update(statusMsg{status: monitor.Status{
+		Server: "接続成功", Pending: 2, LastUpdate: "12:34:56",
+		Note:      "long status note that wraps across multiple lines and should not hide the selected row or footer",
+		CacheNote: "cache note", Session: "Codex / 12345678…",
+	}})
+	cwd := "/tmp/project"
+	app.Update(sessionsMsg{sessions: []domain.SessionInfo{{ThreadID: "s1", Provider: domain.ProviderCodex, Cwd: &cwd}}})
+	content := app.View().Content
+	lines := strings.Split(content, "\n")
+	if len(lines) > 10 {
+		t.Fatalf("picker height exceeded: %d", len(lines))
+	}
+	assertLinesFit(t, lines, 80)
+	if !strings.Contains(content, "> Codex") || !strings.Contains(content, "再検索") {
+		t.Fatalf("selected row/footer missing: %q", content)
+	}
 }
 
 func TestEndReturnsToLatestWithWrappedContent(t *testing.T) {
@@ -302,5 +352,29 @@ func TestEndReturnsToLatestWithWrappedContent(t *testing.T) {
 	app.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	if !app.autoScroll || !app.viewport.AtBottom() {
 		t.Fatal("End did not restore bottom auto-scroll")
+	}
+}
+
+func TestRenderedViewPreservesBlankLinesAndIndent(t *testing.T) {
+	body := "first\n\n  indented line\n\tTabbed line"
+	view := makeView("a1", body, domain.MessageKindAssistant, domain.TranslationStateOriginal, nil)
+	app := appAtSize(t, 80, 24, view)
+	content := app.View().Content
+	lines := strings.Split(content, "\n")
+	foundBlank := false
+	for index := 0; index+1 < len(lines); index++ {
+		if strings.TrimSpace(lines[index]) == "first" && strings.TrimSpace(lines[index+1]) == "" {
+			foundBlank = true
+			break
+		}
+	}
+	if !foundBlank {
+		t.Fatalf("blank line missing: %q", content)
+	}
+	if !strings.Contains(content, "\n  indented line") {
+		t.Fatalf("space indentation lost: %q", content)
+	}
+	if !strings.Contains(content, "\n    Tabbed line") {
+		t.Fatalf("tab indentation lost: %q", content)
 	}
 }

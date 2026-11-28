@@ -285,16 +285,53 @@ func (p *pickerState) restore(sessions []domain.SessionInfo) {
 	}
 }
 
-func (a *App) pickerRows() int {
+const (
+	pickerTitleText  = "セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）"
+	pickerFooterText = "↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索"
+)
+
+// pickerLayout budgets the screen for one selected row and the key guide first,
+// then title/status. This keeps the selected row visible on very short screens.
+func (a *App) pickerLayout() (title, status, footer []string, rows int, separator bool) {
 	width := a.contentWidth()
-	title := len(wrapDisplayLine("セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）", width))
-	status := len(wrapDisplayLine(a.statusText(), width))
-	footer := len(wrapDisplayLine("↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索", width))
-	height := a.height - title - status - footer
+	title = wrapDisplayLine(pickerTitleText, width)
+	status = wrapDisplayLine(a.statusText(), width)
+	footer = wrapDisplayLine(pickerFooterText, width)
+	height := a.height
 	if height < 1 {
 		height = 1
 	}
-	return height
+	budget := height - 1 // reserve one list row
+	if budget < 0 {
+		budget = 0
+	}
+	if len(footer) > budget {
+		footer = footer[:budget]
+	}
+	budget -= len(footer)
+	if (len(title) > 0 || len(status) > 0) && budget > 0 {
+		separator = true
+		budget--
+	}
+	if len(title) > budget {
+		title = title[:budget]
+	}
+	budget -= len(title)
+	if len(status) > budget {
+		status = status[:budget]
+	}
+	budget -= len(status)
+	rows = 1 + budget
+	if separator && len(title) == 0 && len(status) == 0 {
+		separator = false
+		rows++
+	}
+	return title, status, footer, rows, separator
+}
+
+func (a *App) pickerRows() int {
+	_, _, _, rows, _ := a.pickerLayout()
+	return rows
 }
 
 func (a *App) adjustPicker() {
@@ -614,16 +651,21 @@ func (a *App) footerView() string {
 }
 
 func (a *App) pickerView() string {
+	a.adjustPicker()
 	width := a.contentWidth()
-	title := wrapDisplayLine("セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）", width)
-	status := wrapDisplayLine(a.statusText(), width)
-	footer := wrapDisplayLine("↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索", width)
-	lines := append(append(append([]string{}, title...), status...), "")
-	height := a.pickerRows()
-	if len(a.sessions) == 0 {
-		lines = append(lines, wrapDisplayLine("セッションが見つかりません。s で再検索できます。", width)...)
+	title, status, footer, rows, separator := a.pickerLayout()
+	lines := append(append([]string{}, title...), status...)
+	if separator {
+		lines = append(lines, "")
 	}
-	end := a.picker.top + height
+	if len(a.sessions) == 0 {
+		message := wrapDisplayLine("セッションが見つかりません。s で再検索できます。", width)
+		if len(message) > rows {
+			message = message[:rows]
+		}
+		lines = append(lines, message...)
+	}
+	end := a.picker.top + rows
 	if end > len(a.sessions) {
 		end = len(a.sessions)
 	}
