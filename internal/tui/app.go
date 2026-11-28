@@ -167,10 +167,10 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				a.picker = &pickerState{}
 				a.pickerDismissed = false
-				a.restorePickerSelection()
+				a.syncPickerSelection()
 			}
 		} else if a.picker != nil {
-			a.restorePickerSelection()
+			a.syncPickerSelection()
 		}
 		return a, nil
 	case tickMsg:

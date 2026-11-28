@@ -135,8 +135,8 @@ func TestPickerKeepsSessionKeyAcrossRefresh(t *testing.T) {
 	}
 	app.Update(sessionsMsg{sessions: first})
 	app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if app.picker.key.Path != "/b" {
-		t.Fatalf("key %+v", app.picker.key)
+	if app.picker.selectedKey.Path != "/b" {
+		t.Fatalf("key %+v", app.picker.selectedKey)
 	}
 	refreshed := []domain.SessionInfo{
 		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/c", Cwd: &cwdC},
@@ -144,7 +144,7 @@ func TestPickerKeepsSessionKeyAcrossRefresh(t *testing.T) {
 		{ThreadID: "shared", Provider: domain.ProviderCodex, Path: "/b", Cwd: &cwdB},
 	}
 	app.Update(sessionsMsg{sessions: refreshed})
-	if app.picker.selected != 2 || app.picker.key.Path != "/b" {
+	if app.picker.selected != 2 || app.picker.selectedKey.Path != "/b" {
 		t.Fatalf("selection not preserved: %+v", app.picker)
 	}
 }

@@ -24,3 +24,17 @@ identity.
       resize.
 - [x] Add regression tests at 40/60/80/120 cells and run the full quality
       suite plus a PTY check.
+
+## PR #11 review follow-up
+
+- [x] P2-01: compute project labels per unique cwd.
+- [x] P2-02: track the displayed SessionKey separately from the
+      pre-search restore key.
+- [x] P2-03: stop title extraction on unsupported Codex modes, Codex
+      session ID mismatch, and Claude thread mismatch.
+- [x] P2-04: share ai-title validation between head and tail, including
+      session, flags, shape and newline termination.
+- [x] P2-05: distinguish duplicate raw IDs by unique log directory
+      suffixes at narrow widths.
+- [x] P3-01: add inode identity and retain negative cache entries.
+- [x] P3-02: scroll the detail view so every field is reachable.

@@ -48,6 +48,14 @@ readers.
   allowlisted user message.
 - Codex: parse `session_meta.history_mode`, then use the existing
   `Extractor` to obtain the first allowlisted `user` message.
+- Title extraction mirrors the Reader halt conditions: an unsupported
+  Codex `history_mode`, a Codex `session_meta` ID mismatch, or a Claude
+  `thread_mismatch` stops the scan. No record after the anomaly can
+  supply a title.
+- Claude `ai-title` records use one validation path in both the head and
+  tail scans. They must be newline-terminated, name the expected
+  session, carry no excluded internal-event flag, and contain a string
+  `aiTitle`. Unknown shapes and other sessions' titles are ignored.
 - Only allowlisted user content is considered. Tool results, thinking,
   internal events and synthetic messages are excluded by the existing
   extractors.
@@ -60,8 +68,12 @@ readers.
 ## Caching and refresh
 
 `Catalog` caches metadata and titles by path plus file identity
-(size and nanosecond mtime). Unchanged files are not reopened on the
-two-second refresh. `Lstat` rejects symlinks before a cached read.
+(size, nanosecond mtime, and `os.SameFile` inode/device identity).
+Unchanged files are not reopened on the two-second refresh. `Lstat`
+rejects symlinks before a cached read. Negative results for excluded or
+malformed logs are cached too, and entries are only pruned when the
+path stops being a regular file, so eligible and ineligible transcripts
+are not reread every two seconds.
 
 The picker keeps one tick chain alive for the whole app. Each tick
 schedules exactly one successor and discovers only when there is no
@@ -83,18 +95,21 @@ Each candidate occupies two lines:
 ```
 
 - Provider short labels are `Codex` and `CC`.
-- Project labels use the cwd basename. When basenames collide, the
-  shortest unique path suffix is used, up to the full path.
+- Project labels are computed per unique cwd. Sessions sharing a cwd
+  share a label. Only distinct cwds with the same basename grow the
+  shortest unique parent suffix, up to the full path.
 - `DisplayID` is reused. When short IDs collide, the shortest unique
-  prefix is used. When the raw ID and provider also collide, the log
-  file basename is appended.
+  prefix is used. When the provider and raw ID also collide, the
+  shortest unique parent-directory suffix of the log path is appended;
+  if the directories are identical, the file basename is used.
 - Relative times are `たった今`, `N分前`, `N時間前`, `昨日`, `N日前`,
   `N週間前`, `Nか月前` or `N年前`.
-- At narrow widths the second line drops the ID before the project and
-  keeps the update time whenever possible. The title line is always
-  preserved first.
+- At narrow widths the second line keeps the update time and then the
+  path discriminator for duplicated raw IDs, dropping the project or
+  redundant ID first. The title line is always preserved first.
 - `d` opens a detail view with the full UUID, cwd, log path, mode and
-  absolute update time.
+  absolute update time. The detail view scrolls with the arrow keys so
+  every field remains reachable on short screens.
 
 ## Search and selection
 
@@ -104,10 +119,15 @@ ID. `Enter` selects, `Esc` closes, `s` refreshes, and `d` toggles
 detail. `Backspace` and `Ctrl+U` edit the query; `/` toggles search
 capture without discarding the query.
 
-`SessionKey{Provider, ID, Path}` is the only selection identity. A key
-that is temporarily filtered out is remembered, so clearing the query
-restores the same session. Indexes are used only for navigation within
-the current view.
+`SessionKey{Provider, ID, Path}` is the only selection identity. The
+picker keeps two keys: `selectedKey` is the row currently displayed as
+selected, and `restoreKey` is the pre-search key. Periodic refresh and
+reordering reconcile `selectedKey` against the filtered view, so the
+displayed target does not move. If the displayed session disappears,
+the nearest valid row becomes the new `selectedKey`. Clearing the query
+restores `restoreKey` when it still exists. `Enter` always selects the
+currently displayed session. Indexes are used only for navigation
+within the current view.
 
 ## Safety
 

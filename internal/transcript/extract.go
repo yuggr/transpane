@@ -198,6 +198,20 @@ var claudeFlags = []string{
 	"isSidechain", "isMeta", "isCompactSummary", "isVisibleInTranscriptOnly", "isApiErrorMessage",
 }
 
+func claudeFlagsExcluded(record map[string]any) bool {
+	for _, name := range claudeFlags {
+		value, present := record[name]
+		if !present {
+			continue
+		}
+		flag, isBool := value.(bool)
+		if !isBool || flag {
+			return true
+		}
+	}
+	return false
+}
+
 var claudeInternalTags = []string{
 	"<system-reminder>", "<local-command-caveat>", "<local-command-stdout>",
 	"<local-command-stderr>", "<command-message>", "<command-name>", "<command-args>",
@@ -253,15 +267,8 @@ func (e *ClaudeExtractor) validate(record map[string]any) (map[string]any, strin
 	if recordType != "user" && recordType != "assistant" {
 		return nil, "not_allowed"
 	}
-	for _, name := range claudeFlags {
-		value, present := record[name]
-		if !present {
-			continue
-		}
-		flag, isBool := value.(bool)
-		if !isBool || flag {
-			return nil, "excluded"
-		}
+	if claudeFlagsExcluded(record) {
+		return nil, "excluded"
 	}
 	sessionID, ok := asString(record["sessionId"])
 	if !ok || sessionID == "" {

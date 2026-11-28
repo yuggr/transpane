@@ -370,3 +370,160 @@ func TestPickerScrollsSelectedRowIntoView(t *testing.T) {
 	}
 	assertPickerLinesFit(t, app, 80)
 }
+
+func TestProjectLabelsGroupByUniqueCwd(t *testing.T) {
+	now := time.Now()
+	sessions := []domain.SessionInfo{
+		pickerSession(domain.ProviderCodex, "same-a", "one", "/home/u/shared", now),
+		pickerSession(domain.ProviderClaude, "same-b", "two", "/home/u/shared", now),
+		pickerSession(domain.ProviderCodex, "other-c", "three", "/home/u/other/shared", now),
+		pickerSession(domain.ProviderClaude, "unique-d", "four", "/home/u/only", now),
+	}
+	labels := projectLabels(sessions)
+	if labels[0] != labels[1] {
+		t.Fatalf("same cwd labels differ: %#v", labels)
+	}
+	if labels[0] != "…/u/shared" || labels[2] != "…/other/shared" {
+		t.Fatalf("colliding cwds not expanded: %#v", labels)
+	}
+	if labels[3] != "only" {
+		t.Fatalf("unique cwd should keep its basename: %#v", labels)
+	}
+	if labels[0] == "/home/u/shared" {
+		t.Fatalf("same-cwd sessions were treated as a collision: %#v", labels)
+	}
+}
+
+func TestPickerSearchSelectionUsesCurrentAndRestoreKeys(t *testing.T) {
+	now := time.Now()
+	a := pickerSession(domain.ProviderCodex, "aaaaaaaa-1111-4000-8000-000000000001", "alpha", "/home/u/alpha", now.Add(-time.Minute))
+	b := pickerSession(domain.ProviderClaude, "bbbbbbbb-2222-4000-8000-000000000002", "bravo", "/home/u/bravo", now.Add(-2*time.Minute))
+	c := pickerSession(domain.ProviderClaude, "cccccccc-3333-4000-8000-000000000003", "charlie", "/home/u/charlie", now.Add(-3*time.Minute))
+	app := pickerTestApp(t, 100, 30, []domain.SessionInfo{a, b, c})
+	app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	restore := selectedPickerKey(t, app)
+	if restore.ID != b.ThreadID {
+		t.Fatalf("setup selected %+v", restore)
+	}
+
+	app.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	typePickerText(app, "alpha")
+	current := selectedPickerKey(t, app)
+	if current.ID != a.ThreadID {
+		t.Fatalf("filtered selection %+v", current)
+	}
+	if app.picker.restoreKey != restore {
+		t.Fatalf("restore key %+v want %+v", app.picker.restoreKey, restore)
+	}
+
+	app.Update(sessionsMsg{sessions: []domain.SessionInfo{c, b, a}})
+	if got := selectedPickerKey(t, app); got != current {
+		t.Fatalf("reorder changed the filtered selection %+v -> %+v", current, got)
+	}
+
+	app.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	if got := selectedPickerKey(t, app); got != restore {
+		t.Fatalf("clearing search did not restore %+v -> %+v", restore, got)
+	}
+
+	typePickerText(app, "alpha")
+	if got := selectedPickerKey(t, app); got.ID != a.ThreadID {
+		t.Fatalf("second search selected %+v", got)
+	}
+	app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if app.picker != nil {
+		t.Fatal("enter did not close the picker")
+	}
+}
+
+func TestPickerSearchSelectionHandlesCandidateDisappearance(t *testing.T) {
+	now := time.Now()
+	a := pickerSession(domain.ProviderCodex, "aaaaaaaa-1111-4000-8000-000000000001", "alpha", "/home/u/alpha", now.Add(-time.Minute))
+	b := pickerSession(domain.ProviderClaude, "bbbbbbbb-2222-4000-8000-000000000002", "bravo", "/home/u/bravo", now.Add(-2*time.Minute))
+	c := pickerSession(domain.ProviderClaude, "cccccccc-3333-4000-8000-000000000003", "charlie", "/home/u/charlie", now.Add(-3*time.Minute))
+	app := pickerTestApp(t, 100, 30, []domain.SessionInfo{a, b, c})
+	app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	app.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	typePickerText(app, "a")
+	if got := selectedPickerKey(t, app); got.ID != b.ThreadID {
+		t.Fatalf("setup selected %+v", got)
+	}
+
+	app.Update(sessionsMsg{sessions: []domain.SessionInfo{a, c}})
+	if got := selectedPickerKey(t, app); got.ID != c.ThreadID {
+		t.Fatalf("candidate disappearance did not fall back: %+v", got)
+	}
+
+	app.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	if got := selectedPickerKey(t, app); got.ID != c.ThreadID {
+		t.Fatalf("clearing search changed the fallback: %+v", got)
+	}
+}
+
+func TestPickerDistinguishesSameRawIDAcrossClaudeProjects(t *testing.T) {
+	id := "99999999-0000-4000-8000-000000000009"
+	cwd := "/home/u/shared"
+	updated := time.Now().Add(-time.Minute)
+	mode := "claude-jsonl"
+	first := domain.SessionInfo{
+		Provider: domain.ProviderClaude, ThreadID: id,
+		Path: "/root/.claude/projects/-home-u-project-a/" + id + ".jsonl",
+		Cwd:  &cwd, Title: "same work", HistoryMode: &mode,
+		UpdatedAt: float64(updated.UnixNano()) / 1e9,
+	}
+	second := first
+	second.Path = "/root/.claude/projects/-home-u-project-b/" + id + ".jsonl"
+	sessions := []domain.SessionInfo{first, second}
+	rows := buildPickerRows(sessions, time.Now())
+	if rows[0].extra == "" || rows[0].extra == rows[1].extra {
+		t.Fatalf("path discriminators do not differ: %#v", rows)
+	}
+
+	app := pickerTestApp(t, 40, 24, sessions)
+	assertPickerLinesFit(t, app, 40)
+	content := app.View().Content
+	if !strings.Contains(content, "project-a") || !strings.Contains(content, "project-b") {
+		t.Fatalf("same raw ID rows are not distinguishable: %q", content)
+	}
+	app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	selected, ok := app.selectedPickerSession()
+	if !ok || selected.Path != second.Path {
+		t.Fatalf("selection did not follow SessionKey.Path: %+v %v", selected, ok)
+	}
+}
+
+func TestPickerDetailScrollReachesAllFields(t *testing.T) {
+	id := "7579c4bd-0000-4000-8000-000000000001"
+	cwd := "/home/u/project-a"
+	updated := time.Date(2026, 11, 28, 9, 30, 0, 0, time.Local)
+	session := pickerSession(domain.ProviderClaude, id, "PowerShellの配置確認", cwd, updated)
+	app := pickerTestApp(t, 40, 8, []domain.SessionInfo{session})
+	app.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+
+	targets := []string{
+		id,
+		cwd,
+		session.Path,
+		"形式:claude-jsonl",
+		"最終更新:" + strings.ReplaceAll(updated.Format("2006-01-02 15:04:05"), " ", ""),
+	}
+	seen := map[string]bool{}
+	for step := 0; step < 30; step++ {
+		compact := strings.Join(strings.Fields(app.View().Content), "")
+		for _, target := range targets {
+			if strings.Contains(compact, target) {
+				seen[target] = true
+			}
+		}
+		app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	for _, target := range targets {
+		if !seen[target] {
+			t.Fatalf("detail scroll never showed %q (top=%d)", target, app.picker.detailTop)
+		}
+	}
+	if app.picker.detailTop == 0 {
+		t.Fatal("detail did not scroll")
+	}
+	assertPickerLinesFit(t, app, 40)
+}

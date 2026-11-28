@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,12 +13,14 @@ import (
 )
 
 type pickerState struct {
-	selected  int
-	top       int
-	key       domain.SessionKey
-	query     string
-	searching bool
-	detail    bool
+	selected    int
+	top         int
+	selectedKey domain.SessionKey
+	restoreKey  domain.SessionKey
+	query       string
+	searching   bool
+	detail      bool
+	detailTop   int
 }
 
 const (
@@ -49,7 +52,7 @@ func (a *App) pickerFooterText() string {
 		return ""
 	}
 	if a.picker.detail {
-		return "d:一覧  ↑↓:選択  Enter:決定  Esc:閉じる"
+		return "↑↓:スクロール  d:一覧  Enter:決定  Esc:閉じる"
 	}
 	if a.picker.searching {
 		return "文字:検索  Backspace:削除  ↑↓:選択  Enter:決定  Esc:閉じる"
@@ -190,10 +193,10 @@ func (a *App) adjustPicker() {
 	}
 }
 
-// restorePickerSelection keeps the selected SessionKey across refresh, search
-// and resize. A key that is temporarily filtered out is remembered, so
-// clearing the query can bring the same session back into view.
-func (a *App) restorePickerSelection() {
+// syncPickerSelection keeps the currently displayed SessionKey across
+// refresh, search and resize. The key is the source of truth; the index is
+// only a position in the current filtered view.
+func (a *App) syncPickerSelection() {
 	if a.picker == nil {
 		return
 	}
@@ -203,11 +206,11 @@ func (a *App) restorePickerSelection() {
 		a.picker.top = 0
 		return
 	}
-	if a.picker.key == (domain.SessionKey{}) {
-		a.picker.key = sessions[0].Key()
+	if a.picker.selectedKey == (domain.SessionKey{}) {
+		a.picker.selectedKey = sessions[0].Key()
 	}
 	for index, session := range sessions {
-		if session.Key() == a.picker.key {
+		if session.Key() == a.picker.selectedKey {
 			a.picker.selected = index
 			a.adjustPicker()
 			return
@@ -219,7 +222,57 @@ func (a *App) restorePickerSelection() {
 	if a.picker.selected < 0 {
 		a.picker.selected = 0
 	}
+	a.picker.selectedKey = sessions[a.picker.selected].Key()
 	a.adjustPicker()
+}
+
+// restoreSearchSelection returns to the session that was selected before the
+// search began. It only runs when the query becomes empty.
+func (a *App) restoreSearchSelection() {
+	p := a.picker
+	if p == nil {
+		return
+	}
+	if p.restoreKey != (domain.SessionKey{}) {
+		for index, session := range a.sessions {
+			if session.Key() == p.restoreKey {
+				p.selectedKey = p.restoreKey
+				p.selected = index
+				p.restoreKey = domain.SessionKey{}
+				p.top = 0
+				a.adjustPicker()
+				return
+			}
+		}
+		p.restoreKey = domain.SessionKey{}
+	}
+	a.syncPickerSelection()
+}
+
+func (a *App) setPickerQuery(query string) {
+	if a.picker == nil {
+		return
+	}
+	wasEmpty := strings.TrimSpace(a.picker.query) == ""
+	if wasEmpty && strings.TrimSpace(query) != "" && a.picker.searching && a.picker.restoreKey == (domain.SessionKey{}) {
+		a.picker.restoreKey = a.picker.selectedKey
+	}
+	a.picker.query = query
+	if strings.TrimSpace(query) == "" {
+		a.restoreSearchSelection()
+		return
+	}
+	a.syncPickerSelection()
+}
+
+func (a *App) startPickerSearch() {
+	if a.picker == nil {
+		return
+	}
+	if a.picker.query == "" {
+		a.picker.restoreKey = a.picker.selectedKey
+	}
+	a.picker.searching = true
 }
 
 func (a *App) movePicker(delta int) {
@@ -232,8 +285,30 @@ func (a *App) movePicker(delta int) {
 		return
 	}
 	a.picker.selected = next
-	a.picker.key = sessions[next].Key()
+	a.picker.selectedKey = sessions[next].Key()
 	a.adjustPicker()
+}
+
+func (a *App) moveDetail(delta int) {
+	if a.picker == nil {
+		return
+	}
+	rows := a.pickerRows()
+	if rows < 1 {
+		return
+	}
+	detail := a.pickerDetailLines(a.contentWidth())
+	maxTop := len(detail) - rows
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	a.picker.detailTop += delta
+	if a.picker.detailTop > maxTop {
+		a.picker.detailTop = maxTop
+	}
+	if a.picker.detailTop < 0 {
+		a.picker.detailTop = 0
+	}
 }
 
 func (a *App) selectedPickerSession() (domain.SessionInfo, bool) {
@@ -288,19 +363,35 @@ func (a *App) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			p.searching = false
 		case "backspace":
 			if p.query != "" {
-				p.query = removeLastRune(p.query)
-				a.restorePickerSelection()
+				a.setPickerQuery(removeLastRune(p.query))
 			}
 		case "ctrl+u":
-			p.query = ""
-			a.restorePickerSelection()
+			a.setPickerQuery("")
 		default:
 			if text, ok := printableKeyText(msg); ok {
-				p.query += text
-				a.restorePickerSelection()
+				a.setPickerQuery(p.query + text)
 			}
 		}
 		a.adjustPicker()
+		return a, nil
+	}
+	if p.detail {
+		switch key {
+		case "esc":
+			a.closePicker()
+		case "up", "k":
+			a.moveDetail(-1)
+		case "down", "j":
+			a.moveDetail(1)
+		case "d":
+			p.detail = false
+			p.detailTop = 0
+			a.adjustPicker()
+		case "enter":
+			return a.selectPickerSession()
+		case "s":
+			return a, a.discoverCmd()
+		}
 		return a, nil
 	}
 	switch key {
@@ -309,9 +400,10 @@ func (a *App) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		return a, a.discoverCmd()
 	case "/":
-		p.searching = true
+		a.startPickerSearch()
 	case "d":
-		p.detail = !p.detail
+		p.detail = true
+		p.detailTop = 0
 		a.adjustPicker()
 	case "up", "k":
 		a.movePicker(-1)
@@ -354,10 +446,21 @@ func (a *App) pickerView() string {
 	}
 	if a.picker.detail {
 		detail := a.pickerDetailLines(width)
-		if len(detail) > rows {
-			detail = detail[:rows]
+		maxTop := len(detail) - rows
+		if maxTop < 0 {
+			maxTop = 0
 		}
-		lines = append(lines, detail...)
+		if a.picker.detailTop > maxTop {
+			a.picker.detailTop = maxTop
+		}
+		if a.picker.detailTop < 0 {
+			a.picker.detailTop = 0
+		}
+		end := a.picker.detailTop + rows
+		if end > len(detail) {
+			end = len(detail)
+		}
+		lines = append(lines, detail[a.picker.detailTop:end]...)
 	} else {
 		sessions := a.pickerSessions()
 		if len(sessions) == 0 {
@@ -407,20 +510,17 @@ type pickerRow struct {
 func buildPickerRows(sessions []domain.SessionInfo, now time.Time) []pickerRow {
 	projects := projectLabels(sessions)
 	ids := idLabels(sessions)
-	counts := duplicateThreadIDs(sessions)
+	paths := pathDiscriminators(sessions)
 	rows := make([]pickerRow, len(sessions))
 	for index, session := range sessions {
-		row := pickerRow{
+		rows[index] = pickerRow{
 			session: session,
 			title:   strings.TrimSpace(session.Title),
 			project: projects[index],
 			updated: formatRelativeTime(session.UpdatedAt, now),
 			id:      ids[index],
+			extra:   paths[index],
 		}
-		if counts[string(session.Provider)+"|"+session.ThreadID] > 1 && session.Path != "" {
-			row.extra = shortPathBase(session.Path)
-		}
-		rows[index] = row
 	}
 	return rows
 }
@@ -446,14 +546,38 @@ func renderPickerRow(row pickerRow, selected bool, width, lineBudget int) []stri
 }
 
 // fitSecondLine keeps the update time whenever it can, then the project, then
-// the ID. The path disambiguator is appended only when everything else fits.
+// the ID. A path discriminator for a duplicated raw ID is promoted so a narrow
+// view can still show why two otherwise identical rows differ.
 func fitSecondLine(project, updated, id, extra string, width int) string {
+	combined := id
+	if extra != "" {
+		if combined == "" {
+			combined = extra
+		} else {
+			combined += "·" + extra
+		}
+	}
 	candidates := [][]string{
-		{project, updated, id, extra},
 		{project, updated, id},
 		{project, updated},
 		{updated, id},
 		{updated},
+	}
+	if extra != "" {
+		candidates = [][]string{
+			{project, updated, id, extra},
+			{project, updated, combined},
+			{updated, id, extra},
+			{updated, combined},
+			{project, updated, extra},
+			{updated, extra},
+			{project, updated},
+			{updated, id},
+			{combined},
+			{updated},
+			{extra},
+			{id},
+		}
 	}
 	for _, parts := range candidates {
 		cleaned := parts[:0]
@@ -470,7 +594,7 @@ func fitSecondLine(project, updated, id, extra string, width int) string {
 			return joined
 		}
 	}
-	for _, part := range []string{updated, project, id, extra} {
+	for _, part := range []string{combined, updated, project, id, extra} {
 		if part != "" {
 			return ansi.Truncate(part, width, "…")
 		}
@@ -510,29 +634,46 @@ func (a *App) pickerDetailLines(width int) []string {
 	return lines
 }
 
+// projectLabels builds labels per unique cwd, not per session. Sessions that
+// share a cwd always share a label; only distinct cwds with the same basename
+// grow their parent suffix.
 func projectLabels(sessions []domain.SessionInfo) []string {
-	labels := make([]string, len(sessions))
+	type cwdLabel struct {
+		cwd   string
+		label string
+	}
+	byCwd := map[string]*cwdLabel{}
+	order := []string{}
+	for _, session := range sessions {
+		if session.Cwd == nil || strings.TrimSpace(*session.Cwd) == "" {
+			continue
+		}
+		key := filepath.Clean(*session.Cwd)
+		if _, found := byCwd[key]; found {
+			continue
+		}
+		byCwd[key] = &cwdLabel{cwd: key, label: projectBase(&key)}
+		order = append(order, key)
+	}
 	maxDepth := 0
-	for index, session := range sessions {
-		labels[index] = projectBase(session.Cwd)
-		if session.Cwd != nil {
-			if depth := len(pathComponents(*session.Cwd)); depth > maxDepth {
-				maxDepth = depth
-			}
+	for _, key := range order {
+		if depth := len(pathComponents(byCwd[key].cwd)); depth > maxDepth {
+			maxDepth = depth
 		}
 	}
 	for depth := 2; depth <= maxDepth; depth++ {
 		counts := map[string]int{}
-		for _, label := range labels {
-			counts[label]++
+		for _, key := range order {
+			counts[byCwd[key].label]++
 		}
 		changed := false
-		for index, session := range sessions {
-			if counts[labels[index]] <= 1 || session.Cwd == nil {
+		for _, key := range order {
+			item := byCwd[key]
+			if counts[item.label] <= 1 {
 				continue
 			}
-			if candidate := projectSuffix(session.Cwd, depth); candidate != labels[index] {
-				labels[index] = candidate
+			if candidate := projectSuffix(&item.cwd, depth); candidate != item.label {
+				item.label = candidate
 				changed = true
 			}
 		}
@@ -540,7 +681,92 @@ func projectLabels(sessions []domain.SessionInfo) []string {
 			break
 		}
 	}
+	labels := make([]string, len(sessions))
+	for index, session := range sessions {
+		if session.Cwd == nil || strings.TrimSpace(*session.Cwd) == "" {
+			labels[index] = pickerNoCwd
+			continue
+		}
+		labels[index] = byCwd[filepath.Clean(*session.Cwd)].label
+	}
 	return labels
+}
+
+// pathDiscriminators returns a compact path label only for sessions whose
+// provider and raw ID collide. The DisplayID is identical for those rows, so
+// the path label is what lets the user tell them apart.
+func pathDiscriminators(sessions []domain.SessionInfo) []string {
+	labels := make([]string, len(sessions))
+	groups := map[string][]int{}
+	for index, session := range sessions {
+		key := string(session.Provider) + "|" + session.ThreadID
+		groups[key] = append(groups[key], index)
+	}
+	for _, indices := range groups {
+		if len(indices) <= 1 {
+			continue
+		}
+		maxDepth := 0
+		for _, index := range indices {
+			directories := pathDirectories(sessions[index].Path)
+			if len(directories) > maxDepth {
+				maxDepth = len(directories)
+			}
+			labels[index] = directorySuffix(directories, 1)
+		}
+		for depth := 2; depth <= maxDepth; depth++ {
+			counts := map[string]int{}
+			for _, index := range indices {
+				counts[labels[index]]++
+			}
+			changed := false
+			for _, index := range indices {
+				if counts[labels[index]] <= 1 {
+					continue
+				}
+				directories := pathDirectories(sessions[index].Path)
+				if candidate := directorySuffix(directories, depth); candidate != labels[index] {
+					labels[index] = candidate
+					changed = true
+				}
+			}
+			if !changed {
+				break
+			}
+		}
+		counts := map[string]int{}
+		for _, index := range indices {
+			counts[labels[index]]++
+		}
+		for _, index := range indices {
+			if labels[index] == "" || counts[labels[index]] > 1 {
+				labels[index] = shortPathBase(sessions[index].Path)
+			}
+		}
+	}
+	return labels
+}
+
+func pathDirectories(path string) []string {
+	parts := pathComponents(path)
+	if len(parts) <= 1 {
+		return nil
+	}
+	return parts[:len(parts)-1]
+}
+
+func directorySuffix(directories []string, depth int) string {
+	if len(directories) == 0 {
+		return ""
+	}
+	if depth >= len(directories) {
+		return strings.Join(directories, "/")
+	}
+	suffix := strings.Join(directories[len(directories)-depth:], "/")
+	if depth == 1 {
+		return suffix
+	}
+	return "…/" + suffix
 }
 
 func projectBase(cwd *string) string {
@@ -609,14 +835,6 @@ func uniqueIDPrefix(id string, sessions []domain.SessionInfo) string {
 		}
 	}
 	return id
-}
-
-func duplicateThreadIDs(sessions []domain.SessionInfo) map[string]int {
-	counts := map[string]int{}
-	for _, session := range sessions {
-		counts[string(session.Provider)+"|"+session.ThreadID]++
-	}
-	return counts
 }
 
 func shortPathBase(path string) string {

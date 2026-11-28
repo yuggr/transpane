@@ -30,6 +30,17 @@ type Catalog struct {
 type fileStamp struct {
 	size    int64
 	modTime int64
+	info    os.FileInfo
+}
+
+func (s fileStamp) matches(other fileStamp) bool {
+	if s.size != other.size || s.modTime != other.modTime {
+		return false
+	}
+	if s.info == nil || other.info == nil {
+		return false
+	}
+	return os.SameFile(s.info, other.info)
 }
 
 type codexMetaEntry struct {
@@ -70,7 +81,7 @@ func (c *Catalog) Discover(cwd string) []domain.SessionInfo {
 	defer c.mu.Unlock()
 
 	sessions := discoverAll(c.codexRoot, c.claudeRoot, c.source, c.readCodexMeta, c.readClaudeMeta)
-	c.prune(sessions)
+	c.prune()
 	if cwd != "" {
 		sessions = SessionsForCwd(sessions, cwd)
 	}
@@ -80,23 +91,22 @@ func (c *Catalog) Discover(cwd string) []domain.SessionInfo {
 	return sessions
 }
 
-func (c *Catalog) prune(sessions []domain.SessionInfo) {
-	keep := make(map[string]bool, len(sessions))
-	for _, session := range sessions {
-		keep[session.Path] = true
-	}
+// prune drops entries only when the file no longer exists as a regular file.
+// Negative results stay cached too, so an excluded or malformed transcript is
+// not reread on every refresh while its identity is unchanged.
+func (c *Catalog) prune() {
 	for path := range c.codexMeta {
-		if !keep[path] {
+		if _, ok := stampFor(path); !ok {
 			delete(c.codexMeta, path)
 		}
 	}
 	for path := range c.claudeMeta {
-		if !keep[path] {
+		if _, ok := stampFor(path); !ok {
 			delete(c.claudeMeta, path)
 		}
 	}
 	for path := range c.titles {
-		if !keep[path] {
+		if _, ok := stampFor(path); !ok {
 			delete(c.titles, path)
 		}
 	}
@@ -107,7 +117,7 @@ func stampFor(path string) (fileStamp, bool) {
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fileStamp{}, false
 	}
-	return fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano()}, true
+	return fileStamp{size: info.Size(), modTime: info.ModTime().UnixNano(), info: info}, true
 }
 
 func (c *Catalog) readCodexMeta(path string) (map[string]any, bool) {
@@ -116,7 +126,7 @@ func (c *Catalog) readCodexMeta(path string) (map[string]any, bool) {
 		delete(c.codexMeta, path)
 		return nil, false
 	}
-	if cached, found := c.codexMeta[path]; found && cached.stamp == stamp {
+	if cached, found := c.codexMeta[path]; found && cached.stamp.matches(stamp) {
 		return cached.payload, cached.ok
 	}
 	payload, ok := ReadCodexMeta(path)
@@ -130,7 +140,7 @@ func (c *Catalog) readClaudeMeta(path string) (*string, *string, bool) {
 		delete(c.claudeMeta, path)
 		return nil, nil, false
 	}
-	if cached, found := c.claudeMeta[path]; found && cached.stamp == stamp {
+	if cached, found := c.claudeMeta[path]; found && cached.stamp.matches(stamp) {
 		return cached.cwd, cached.version, cached.ok
 	}
 	cwd, version, ok := ReadClaudeMeta(path)
@@ -144,7 +154,7 @@ func (c *Catalog) titleFor(session domain.SessionInfo) string {
 		delete(c.titles, session.Path)
 		return ""
 	}
-	if cached, found := c.titles[session.Path]; found && cached.stamp == stamp {
+	if cached, found := c.titles[session.Path]; found && cached.stamp.matches(stamp) {
 		return cached.title
 	}
 	title := extractTitle(session)
@@ -189,12 +199,20 @@ func extractCodexTitle(file *os.File, threadID string) string {
 		}
 		if record["type"] == "session_meta" {
 			payload, _ := record["payload"].(map[string]any)
-			if payload != nil {
-				if parsed, parseErr := ParseHistoryMode(payload["history_mode"]); parseErr == nil {
-					mode = parsed
-					extractor = NewExtractor(threadID, mode)
-				}
+			if payload == nil {
+				continue
 			}
+			// Mirror Reader.processSessionMeta: an ID mismatch or an
+			// unsupported history mode halts the session.
+			if seen, ok := payload["id"].(string); ok && seen != "" && seen != threadID {
+				return ""
+			}
+			parsed, parseErr := ParseHistoryMode(payload["history_mode"])
+			if parseErr != nil {
+				return ""
+			}
+			mode = parsed
+			extractor = NewExtractor(threadID, mode)
 			continue
 		}
 		result := extractor.Extract(record, 0)
@@ -232,21 +250,22 @@ func extractClaudeTitle(file *os.File, threadID string) string {
 			continue
 		}
 		if record["type"] == "ai-title" {
-			if text, ok := record["aiTitle"].(string); ok {
-				if title := titleFromText(text); title != "" {
-					metatitle = title
-				}
+			if title, ok := claudeTitleRecord(record, threadID); ok {
+				metatitle = title
 			}
 			continue
 		}
-		if firstUser == "" {
-			result := extractor.Extract(record, 0)
-			if result.Message != nil && result.Message.Kind == domain.MessageKindUser {
-				firstUser = titleFromText(result.Message.Original)
-			}
+		result := extractor.Extract(record, 0)
+		// Mirror Reader.processClaudeLine: a record from another session
+		// halts extraction and no later record may supply a title.
+		if result.Reason == "thread_mismatch" {
+			return ""
+		}
+		if firstUser == "" && result.Message != nil && result.Message.Kind == domain.MessageKindUser {
+			firstUser = titleFromText(result.Message.Original)
 		}
 	}
-	if title := claudeTailTitle(file); title != "" {
+	if title := claudeTailTitle(file, threadID); title != "" {
 		return title
 	}
 	if metatitle != "" {
@@ -255,7 +274,7 @@ func extractClaudeTitle(file *os.File, threadID string) string {
 	return firstUser
 }
 
-func claudeTailTitle(file *os.File) string {
+func claudeTailTitle(file *os.File, threadID string) string {
 	info, err := file.Stat()
 	if err != nil {
 		return ""
@@ -286,7 +305,14 @@ func claudeTailTitle(file *os.File) string {
 		data = data[newline+1:]
 	}
 	title := ""
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
+	for len(data) > 0 {
+		newline := bytes.IndexByte(data, '\n')
+		if newline < 0 {
+			// A record without a newline terminator is incomplete.
+			break
+		}
+		line := data[:newline]
+		data = data[newline+1:]
 		if len(line) == 0 {
 			continue
 		}
@@ -294,16 +320,33 @@ func claudeTailTitle(file *os.File) string {
 		if !ok {
 			continue
 		}
-		if record["type"] != "ai-title" {
-			continue
-		}
-		if text, ok := record["aiTitle"].(string); ok {
-			if cleaned := titleFromText(text); cleaned != "" {
-				title = cleaned
-			}
+		if cleaned, ok := claudeTitleRecord(record, threadID); ok {
+			title = cleaned
 		}
 	}
 	return title
+}
+
+// claudeTitleRecord is the single validation path for ai-title records in the
+// head and tail scans. It requires the same session, no internal-event flag,
+// the ai-title record shape, and a usable string.
+func claudeTitleRecord(record map[string]any, threadID string) (string, bool) {
+	if record["type"] != "ai-title" {
+		return "", false
+	}
+	sessionID, ok := record["sessionId"].(string)
+	if !ok || sessionID == "" || sessionID != threadID {
+		return "", false
+	}
+	if claudeFlagsExcluded(record) {
+		return "", false
+	}
+	text, ok := record["aiTitle"].(string)
+	if !ok {
+		return "", false
+	}
+	title := titleFromText(text)
+	return title, title != ""
 }
 
 // titleFromText returns the first meaningful, single display line of a
