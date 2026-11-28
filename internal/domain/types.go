@@ -27,6 +27,16 @@ func (p Provider) Label() string {
 	}
 }
 
+// ShortLabel is the compact picker label: Codex and CC.
+func (p Provider) ShortLabel() string {
+	switch p {
+	case ProviderClaude:
+		return "CC"
+	default:
+		return "Codex"
+	}
+}
+
 // MessageKind is the display classification of one transcript message.
 type MessageKind string
 
@@ -138,6 +148,9 @@ type SessionInfo struct {
 	ParentThreadID *string
 	Source         *string
 	Provider       Provider
+	// Title is resolved deterministically from the session's own metadata or
+	// first allowlisted user message. An empty value means unknown.
+	Title string
 }
 
 // Key returns the stable identity of the session.

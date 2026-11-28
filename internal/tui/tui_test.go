@@ -113,7 +113,7 @@ func TestPickerShowsSameIDsAndKeepsRowIdentity(t *testing.T) {
 	}
 	app.Update(sessionsMsg{sessions: sessions})
 	content := app.View().Content
-	if !strings.Contains(content, "セッションを選択") || !strings.Contains(content, "Codex") || !strings.Contains(content, "Claude Code") || !strings.Contains(content, "/tmp/a") || !strings.Contains(content, "/tmp/b") {
+	if !strings.Contains(content, "セッションを選択") || !strings.Contains(content, "[Codex]") || !strings.Contains(content, "[CC]") || !strings.Contains(content, "a |") || !strings.Contains(content, "b |") {
 		t.Fatalf("%q", content)
 	}
 	app.Update(tea.KeyPressMsg{Code: tea.KeyDown})

@@ -223,3 +223,17 @@ func TestUnicodeAndCRLF(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactSecrets(t *testing.T) {
+	cases := map[string]string{ //nolint:gosec // deliberate secret fixtures
+
+		"plain title": "plain title",
+		"Use token sk-abcdefghijklmnopqrstuvwx now":       "Use token *** now",
+		"github_pat_abcdefghijklmnopqrstuvwxyz0123456789": "***",
+	}
+	for input, want := range cases {
+		if got := RedactSecrets(input); got != want {
+			t.Fatalf("%q: got %q want %q", input, got, want)
+		}
+	}
+}

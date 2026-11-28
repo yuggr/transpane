@@ -157,6 +157,10 @@ func isRolloutName(name string) bool {
 // DiscoverCodex walks the sessions tree in lexical order, excluding archived
 // sessions, symlinks and files outside the resolved root.
 func DiscoverCodex(sessionsRoot string) []domain.SessionInfo {
+	return discoverCodex(sessionsRoot, ReadCodexMeta)
+}
+
+func discoverCodex(sessionsRoot string, readMeta func(string) (map[string]any, bool)) []domain.SessionInfo {
 	info, err := os.Stat(sessionsRoot)
 	if err != nil || !info.IsDir() {
 		return nil
@@ -197,7 +201,7 @@ func DiscoverCodex(sessionsRoot string) []domain.SessionInfo {
 		if !withinRoot(path, rootReal) {
 			return nil
 		}
-		payload, ok := ReadCodexMeta(path)
+		payload, ok := readMeta(path)
 		if !ok {
 			return nil
 		}
@@ -356,9 +360,13 @@ func claudeMetaValues(record map[string]any) (cwd, version *string, ok bool) {
 
 // DiscoverClaude discovers direct <project>/<uuid>.jsonl transcripts.
 func DiscoverClaude(projectsRoot string) []domain.SessionInfo {
+	return discoverClaude(projectsRoot, ReadClaudeMeta)
+}
+
+func discoverClaude(projectsRoot string, readMeta func(string) (*string, *string, bool)) []domain.SessionInfo {
 	found := []domain.SessionInfo{}
 	for _, path := range iterClaudeFiles(projectsRoot) {
-		cwd, version, ok := ReadClaudeMeta(path)
+		cwd, version, ok := readMeta(path)
 		if !ok {
 			continue
 		}
@@ -407,12 +415,21 @@ func ClaudeTranscriptCounts(projectsRoot string) (confirmed, unconfirmed int) {
 
 // DiscoverAll merges providers in the same order as the Python baseline.
 func DiscoverAll(codexRoot, claudeRoot string, source *domain.Provider) []domain.SessionInfo {
+	return discoverAll(codexRoot, claudeRoot, source, ReadCodexMeta, ReadClaudeMeta)
+}
+
+func discoverAll(
+	codexRoot, claudeRoot string,
+	source *domain.Provider,
+	readCodex func(string) (map[string]any, bool),
+	readClaude func(string) (*string, *string, bool),
+) []domain.SessionInfo {
 	found := []domain.SessionInfo{}
 	if source == nil || *source == domain.ProviderCodex {
-		found = append(found, DiscoverCodex(codexRoot)...)
+		found = append(found, discoverCodex(codexRoot, readCodex)...)
 	}
 	if source == nil || *source == domain.ProviderClaude {
-		found = append(found, DiscoverClaude(claudeRoot)...)
+		found = append(found, discoverClaude(claudeRoot, readClaude)...)
 	}
 	sort.SliceStable(found, func(i, j int) bool {
 		if found[i].UpdatedAt != found[j].UpdatedAt {

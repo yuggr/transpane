@@ -38,6 +38,10 @@ const (
 	MaxPollBytes               = 1024 * 1024
 	InitialScanChunkBytes      = 1024 * 1024
 	MetaReadLimit              = 1024 * 1024
+	TitleReadLimit             = 256 * 1024
+	TitleTailLimit             = 64 * 1024
+	TitleMaxLines              = 1024
+	TitlePreviewRunes          = 80
 )
 
 var forms = map[string]bool{"polite": true, "plain": true}

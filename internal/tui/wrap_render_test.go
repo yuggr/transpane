@@ -287,7 +287,7 @@ func TestNarrowViewerAndPickerStayInsideScreen(t *testing.T) {
 		t.Fatalf("picker height exceeded: %d lines", len(lines))
 	}
 	assertLinesFit(t, lines, 40)
-	if !strings.Contains(content, "> Codex") {
+	if !strings.Contains(content, "> [Codex]") {
 		t.Fatalf("selected picker row not visible: %q", content)
 	}
 	if !strings.Contains(content, "再検索") {
@@ -313,7 +313,7 @@ func TestPickerKeepsSelectedRowAndFooterWithFullList(t *testing.T) {
 		t.Fatalf("picker height exceeded: %d", len(lines))
 	}
 	assertLinesFit(t, lines, 80)
-	if !strings.Contains(content, "> Codex") || !strings.Contains(content, "再検索") {
+	if !strings.Contains(content, "> [Codex]") || !strings.Contains(content, "再検索") {
 		t.Fatalf("selected row/footer missing: %q", content)
 	}
 }
@@ -334,7 +334,7 @@ func TestPickerKeepsSelectedRowWithLongStatus(t *testing.T) {
 		t.Fatalf("picker height exceeded: %d", len(lines))
 	}
 	assertLinesFit(t, lines, 80)
-	if !strings.Contains(content, "> Codex") || !strings.Contains(content, "再検索") {
+	if !strings.Contains(content, "> [Codex]") || !strings.Contains(content, "再検索") {
 		t.Fatalf("selected row/footer missing: %q", content)
 	}
 }

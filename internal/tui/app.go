@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -37,12 +38,6 @@ type messageRange struct {
 	key   domain.MessageKey
 }
 
-type pickerState struct {
-	selected int
-	top      int
-	key      domain.SessionKey
-}
-
 // App is the viewer model. Monitor events arrive as Bubble Tea messages.
 type App struct {
 	ctx      context.Context
@@ -53,20 +48,23 @@ type App struct {
 	monitor  *monitor.Monitor
 	messages chan tea.Msg
 
-	width         int
-	height        int
-	viewport      viewport.Model
-	views         []monitor.View
-	index         map[domain.MessageKey]int
-	ranges        []messageRange
-	status        monitor.Status
-	session       *domain.SessionInfo
-	originalMode  bool
-	autoScroll    bool
-	picker        *pickerState
-	sessions      []domain.SessionInfo
-	emptyNote     string
-	pendingPicker bool
+	width           int
+	height          int
+	viewport        viewport.Model
+	views           []monitor.View
+	index           map[domain.MessageKey]int
+	ranges          []messageRange
+	status          monitor.Status
+	session         *domain.SessionInfo
+	originalMode    bool
+	autoScroll      bool
+	picker          *pickerState
+	sessions        []domain.SessionInfo
+	catalog         *transcript.Catalog
+	discovering     atomic.Bool
+	emptyNote       string
+	pendingPicker   bool
+	pickerDismissed bool
 }
 
 // New creates a viewer. The monitor is created in Init so tests can drive
@@ -86,6 +84,7 @@ func New(ctx context.Context, cfg config.Config, initial *domain.SessionInfo, cw
 		height:     24,
 		viewport:   vp,
 		index:      map[domain.MessageKey]int{},
+		catalog:    transcript.NewCatalog(cfg.SessionsRoot, cfg.ClaudeProjectsRoot, source),
 		autoScroll: true,
 	}
 	return app
@@ -108,7 +107,7 @@ func Run(ctx context.Context, cfg config.Config, initial *domain.SessionInfo, cw
 }
 
 func (a *App) Init() tea.Cmd {
-	commands := []tea.Cmd{a.waitForEvent()}
+	commands := []tea.Cmd{a.waitForEvent(), a.tickCmd()}
 	if a.monitor == nil {
 		a.monitor = monitor.New(a.ctx, a.config, a, monitor.Options{})
 	}
@@ -119,7 +118,7 @@ func (a *App) Init() tea.Cmd {
 			return nil
 		})
 	} else {
-		commands = append(commands, a.discoverCmd(), a.tickCmd())
+		commands = append(commands, a.discoverCmd())
 	}
 	return tea.Batch(commands...)
 }
@@ -160,26 +159,26 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		a.sessions = msg.sessions
 		a.emptyNote = ""
-		openPicker := a.pendingPicker || (a.picker == nil && a.session == nil)
+		openPicker := a.pendingPicker || (a.picker == nil && a.session == nil && !a.pickerDismissed)
 		a.pendingPicker = false
 		if a.picker == nil && openPicker {
 			if len(a.sessions) == 0 {
 				a.emptyNote = "セッションが見つかりません。s で再検索できます。"
 			} else {
-				state := &pickerState{}
-				state.key = a.sessions[0].Key()
-				a.picker = state
+				a.picker = &pickerState{}
+				a.pickerDismissed = false
+				a.restorePickerSelection()
 			}
 		} else if a.picker != nil {
-			a.picker.restore(a.sessions)
-			a.adjustPicker()
+			a.restorePickerSelection()
 		}
 		return a, nil
 	case tickMsg:
-		if a.session == nil || a.picker != nil {
-			return a, tea.Batch(a.discoverCmd(), a.tickCmd())
+		commands := []tea.Cmd{a.tickCmd()}
+		if a.shouldDiscoverOnTick() {
+			commands = append(commands, a.discoverCmd())
 		}
-		return a, nil
+		return a, tea.Batch(commands...)
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
 	case tea.MouseMsg:
@@ -193,15 +192,22 @@ func (a *App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-	if key == "ctrl+c" || key == "q" {
+	if key == "ctrl+c" {
 		return a, tea.Quit
 	}
 	if a.picker != nil {
-		return a.handlePickerKey(key)
+		if key == "q" && !a.picker.searching {
+			return a, tea.Quit
+		}
+		return a.handlePickerKey(msg)
+	}
+	if key == "q" {
+		return a, tea.Quit
 	}
 	switch key {
 	case "s":
 		a.pendingPicker = true
+		a.pickerDismissed = false
 		return a, a.discoverCmd()
 	case "o":
 		a.originalMode = !a.originalMode
@@ -226,134 +232,19 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-func (a *App) handlePickerKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc":
-		a.picker = nil
-	case "s":
-		return a, a.discoverCmd()
-	case "up", "k":
-		if a.picker.selected > 0 {
-			a.picker.selected--
-			a.picker.key = a.sessions[a.picker.selected].Key()
-		}
-		a.adjustPicker()
-	case "down", "j":
-		if a.picker.selected+1 < len(a.sessions) {
-			a.picker.selected++
-			a.picker.key = a.sessions[a.picker.selected].Key()
-		}
-		a.adjustPicker()
-	case "enter":
-		if a.picker.selected < len(a.sessions) {
-			selected := a.sessions[a.picker.selected]
-			a.picker = nil
-			a.autoScroll = true
-			if a.monitor != nil {
-				return a, func() tea.Msg {
-					a.monitor.Switch(selected)
-					return nil
-				}
-			}
-		}
-	}
-	return a, nil
-}
-
-// restore keeps the selected row's SessionKey when the candidate list refreshes.
-func (p *pickerState) restore(sessions []domain.SessionInfo) {
-	if len(sessions) == 0 {
-		p.selected = 0
-		p.top = 0
-		return
-	}
-	for index, session := range sessions {
-		if session.Key() == p.key {
-			p.selected = index
-			return
-		}
-	}
-	if p.selected >= len(sessions) {
-		p.selected = len(sessions) - 1
-	}
-	if p.selected < 0 {
-		p.selected = 0
-	}
-	p.key = sessions[p.selected].Key()
-	if p.top > p.selected {
-		p.top = p.selected
-	}
-}
-
-const (
-	pickerTitleText  = "セッションを選択（取得元 / ID / cwd / 最終更新 / 形式）"
-	pickerFooterText = "↑↓: 選択  Enter: 決定  Esc: 閉じる  s: 再検索"
-)
-
-// pickerLayout budgets the screen for one selected row and the key guide first,
-// then title/status. This keeps the selected row visible on very short screens.
-func (a *App) pickerLayout() (title, status, footer []string, rows int, separator bool) {
-	width := a.contentWidth()
-	title = wrapDisplayLine(pickerTitleText, width)
-	status = wrapDisplayLine(a.statusText(), width)
-	footer = wrapDisplayLine(pickerFooterText, width)
-	height := a.height
-	if height < 1 {
-		height = 1
-	}
-	budget := height - 1 // reserve one list row
-	if budget < 0 {
-		budget = 0
-	}
-	if len(footer) > budget {
-		footer = footer[:budget]
-	}
-	budget -= len(footer)
-	if (len(title) > 0 || len(status) > 0) && budget > 0 {
-		separator = true
-		budget--
-	}
-	if len(title) > budget {
-		title = title[:budget]
-	}
-	budget -= len(title)
-	if len(status) > budget {
-		status = status[:budget]
-	}
-	budget -= len(status)
-	rows = 1 + budget
-	if separator && len(title) == 0 && len(status) == 0 {
-		separator = false
-		rows++
-	}
-	return title, status, footer, rows, separator
-}
-
-func (a *App) pickerRows() int {
-	_, _, _, rows, _ := a.pickerLayout()
-	return rows
-}
-
-func (a *App) adjustPicker() {
-	height := a.pickerRows()
-	if a.picker.selected < a.picker.top {
-		a.picker.top = a.picker.selected
-	}
-	if a.picker.selected >= a.picker.top+height {
-		a.picker.top = a.picker.selected - height + 1
-	}
+func (a *App) shouldDiscoverOnTick() bool {
+	return a.session == nil || a.picker != nil
 }
 
 func (a *App) discoverCmd() tea.Cmd {
-	cfg := a.config
-	source := a.source
 	cwd := a.cwd
+	catalog := a.catalog
 	return func() tea.Msg {
-		sessions := transcript.DiscoverAll(cfg.SessionsRoot, cfg.ClaudeProjectsRoot, source)
-		if cwd != "" {
-			sessions = transcript.SessionsForCwd(sessions, cwd)
+		if catalog == nil || !a.discovering.CompareAndSwap(false, true) {
+			return nil
 		}
-		return sessionsMsg{sessions: sessions}
+		defer a.discovering.Store(false)
+		return sessionsMsg{sessions: catalog.Discover(cwd)}
 	}
 }
 
@@ -430,6 +321,9 @@ func (a *App) reindex() {
 func (a *App) relayout() {
 	a.applyLayout()
 	a.rebuild(true)
+	if a.picker != nil {
+		a.adjustPicker()
+	}
 }
 
 func (a *App) contentWidth() int {
@@ -648,49 +542,4 @@ func (a *App) View() tea.View {
 
 func (a *App) footerView() string {
 	return "s: セッション  o: 原文/翻訳  r: 再試行  h: 履歴追加  End: 最新  q: 終了"
-}
-
-func (a *App) pickerView() string {
-	a.adjustPicker()
-	width := a.contentWidth()
-	title, status, footer, rows, separator := a.pickerLayout()
-	lines := append(append([]string{}, title...), status...)
-	if separator {
-		lines = append(lines, "")
-	}
-	if len(a.sessions) == 0 {
-		message := wrapDisplayLine("セッションが見つかりません。s で再検索できます。", width)
-		if len(message) > rows {
-			message = message[:rows]
-		}
-		lines = append(lines, message...)
-	}
-	end := a.picker.top + rows
-	if end > len(a.sessions) {
-		end = len(a.sessions)
-	}
-	for index := a.picker.top; index < end; index++ {
-		session := a.sessions[index]
-		cwd := "cwd不明"
-		if session.Cwd != nil {
-			cwd = *session.Cwd
-		}
-		updated := time.Unix(0, int64(session.UpdatedAt*1e9)).Format("2006-01-02 15:04:05")
-		row := fmt.Sprintf("%s  %s  %s  %s  %s", session.Provider.Label(), session.ThreadID, cwd, updated, session.ModeLabel())
-		if session.OriginLabel() != "" {
-			row += "  " + session.OriginLabel()
-		}
-		row = ansi.Truncate(SanitizeForDisplay(row), width, "…")
-		if index == a.picker.selected {
-			row = "> " + row
-		} else {
-			row = "  " + row
-		}
-		lines = append(lines, ansi.Truncate(row, width, "…"))
-	}
-	lines = append(lines, footer...)
-	if a.height > 0 && len(lines) > a.height {
-		lines = lines[:a.height]
-	}
-	return strings.Join(lines, "\n")
 }

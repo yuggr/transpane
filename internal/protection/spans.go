@@ -309,6 +309,32 @@ func splitLine(line, kind string) (prefix, core, suffix string, ok bool) {
 	return line[match[2]:match[3]], core, rest[len(core):], true
 }
 
+// RedactSecrets replaces known credential spans with a fixed marker. It uses
+// the same patterns as translation protection so a title can never expose a
+// value the viewer would otherwise refuse to send.
+func RedactSecrets(text string) string {
+	spans := []span{}
+	for _, pattern := range secretPatterns {
+		spans = append(spans, pattern.find(text)...)
+	}
+	if len(spans) == 0 {
+		return text
+	}
+	sort.SliceStable(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	var builder strings.Builder
+	last := 0
+	for _, item := range spans {
+		if item.start < last {
+			continue
+		}
+		builder.WriteString(text[last:item.start])
+		builder.WriteString("***")
+		last = item.end
+	}
+	builder.WriteString(text[last:])
+	return builder.String()
+}
+
 func classifySkip(core string) string {
 	for _, pattern := range secretPatterns {
 		if len(pattern.find(core)) > 0 {
