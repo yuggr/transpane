@@ -2,7 +2,7 @@
 
 STATUS: PARTIAL
 
-BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `77c3b18` (TUI wrapping fix)
+BASE / HEAD: `f199bb6cce011c80d28f7cdfe91929d62d30c08f` / `68fb6f0` (TUI wrapping fix)
 
 PHASES:
 - Phase 0: complete — baseline pytest 219 passed, toolchain pinned (Go 1.27.4, golangci-lint 2.15.0, govulncheck v1.10.0), dependency smoke tests, synthetic oracle.
@@ -69,8 +69,8 @@ DIFFERENTIAL RESULTS / observed differences (approval pending):
 
 TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `go mod verify` → all modules verified.
-- `go test ./...` → 224 passed.
-- `CGO_ENABLED=1 go test -race ./...` → 224 passed.
+- `go test ./...` → 225 passed.
+- `CGO_ENABLED=1 go test -race ./...` → 225 passed.
 - `go vet ./...` → clean.
 - `golangci-lint run ./...` → 0 issues; `golangci-lint fmt --diff` → clean.
 - `mise run fuzz` → all 5 targets 30 s each → PASS.
@@ -79,8 +79,8 @@ TEST / RACE / LINT / FUZZ / VULN / BUILD:
 - `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w"` → static ELF.
 
 BINARY SIZE / CHECKSUM / RUNTIME DEPENDENCIES:
-- Size: 13,889,696 bytes (stripped, final build at `77c3b18`).
-- SHA-256: `77a7f7aa6b2faf54cecb07b75feade6f39e70762e6ee90e28e2d7bbb80df1907`.
+- Size: 13,889,696 bytes (stripped, final build at `68fb6f0`).
+- SHA-256: `92bbbad6a24fb891bcbdd3d3b59c2ed79be5dd497a837cda0e3de800c61205f9`.
 - `file` → ELF 64-bit LSB executable, x86-64, statically linked; `ldd` → not a dynamic executable.
 - Runtime: Linux amd64 only; no Go/Python/uv/system library requirement.
 
@@ -125,7 +125,7 @@ FRESH REVIEW / FIXES:
 TUI WRAPPING FIX (W01–W14):
 - Root cause: viewport SoftWrap was disabled and `buildContent` passed physical lines unchanged, so lines wider than the terminal were clipped. Status/footer were also unwrapped.
 - Fix: display-only wrapping before `viewport.SetContent` using pinned `github.com/charmbracelet/x/ansi` `Wrap` (grapheme/CJK/ANSI aware), one physical line at a time with tabs expanded to display spaces. Status and footer wrap too; viewport height is recomputed from wrapped aux lines. `SoftWrap` stays off to avoid double wrapping. Anchor ranges are based on wrapped display lines.
-- W01 PASS English word-boundary wrap test; W02 PASS Japanese cell-width test; W03 PASS mixed text no-loss test; W04 PASS long URL/identifier wrap test; W05 PASS explicit newline/blank/indent test; W06 PASS emoji/combining/fullwidth test; W07 PASS resize rewrap test; W08 PASS translation-update anchor test; W09 PASS history-prepend anchor test; W10 PASS original/translation toggle anchor test; W11 PASS End/auto-scroll test; W12 PASS status/footer and narrow picker fit test; W13 PASS data-immutability test; W14 PASS existing TUI/regression suite.
+- W01 PASS English word-boundary wrap test; W02 PASS Japanese cell-width test; W03 PASS mixed text no-loss test; W04 PASS long URL/identifier wrap test; W05 PASS explicit newline/blank/indent test; W06 PASS emoji/combining/fullwidth test; W07 PASS resize rewrap test; W08 PASS translation-update anchor test; W09 PASS history-prepend anchor test; W10 PASS original/translation toggle anchor test; W11 PASS End/auto-scroll test; W12 PASS status/footer and narrow picker fit test, including heights 1–5; W13 PASS data-immutability test; W14 PASS existing TUI/regression suite.
 - PTY at 40×20: original/long English, translated text, Japanese end marker displayed and `q` exited 0. Real-terminal resize and visual CJK-cell confirmation are NOT RUN; G26 remains PARTIAL.
 
 UNRESOLVED RISKS / NOT VERIFIED:
